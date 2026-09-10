@@ -71,6 +71,7 @@ def test_nomads_urls_request_only_massden_at_8m() -> None:
 def test_index_requires_massden_and_8m_level() -> None:
     assert parse_hrrr_index("76:45444206:d=2026081400:MASSDEN:8 m above ground:anl:")
     assert not parse_hrrr_index("TMP:2 m above ground")
+    assert not parse_hrrr_index("MASSDEN:2 m above ground\nTMP:8 m above ground")
 
 
 def test_native_hrrr_hour_preserves_grid_values_validity_and_identity() -> None:
@@ -159,6 +160,7 @@ def test_decode_accepts_unknown_or_named_massden_at_8m_and_converts_kg_to_ug() -
 
 def test_decode_rejects_unknown_identity_and_non_8m_height() -> None:
     cases = (
+        (_grib_keys(short_name="TMP", parameter=(0, 20, 0)), "unexpected HRRR variable TMP"),
         (_grib_keys(short_name="UNKNOWN", parameter=(0, 20, 1)), "unexpected HRRR variable UNKNOWN"),
         (_grib_keys(short_name="UNKNOWN", parameter=(0, 19, 0)), "unexpected HRRR variable UNKNOWN"),
         (_grib_keys(short_name="UNKNOWN", parameter=(1, 20, 0)), "unexpected HRRR variable UNKNOWN"),

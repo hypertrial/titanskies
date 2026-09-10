@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 import json
+import hashlib
+import shutil
 from pathlib import Path
 from unittest.mock import patch
 
@@ -11,14 +13,44 @@ import io
 
 from ingest.local_store import LocalFrameStore
 from ingest.config import Settings
+from ingest.context_contracts import CONTEXT_JSON_BUDGET_BYTES, validate_context_manifest
 from ingest.context_sources import PROVENANCE, apply_light_sources, gather_light_sources
+from ingest.context_pipeline import run_context_ingest
+from ingest.context_publish import _previous_context, _put_asset, _seed_asset_memo
 from ingest.context_types import SourceFailure
+from ingest.perf import ingest_run
 from ingest.sources.firework import _validated_firework_sld_png, parse_firework_capabilities
 from ingest.sources.context_http import _get
+from ingest.sources.context_raster import image_png
 from ingest.sources.wildfires import parse_cwfis, parse_wfigs
 
 NOW = datetime(2026, 9, 10, 10, tzinfo=timezone.utc)
 EXPECTED_SOURCES = {"airnow", "bcair", "sinaica", "aqhi", "wfigs", "cwfis", "firework", "hrrr"}
+
+
+def test_perimeter_png_encoding_is_stable() -> None:
+    image = Image.new("RGBA", (3, 2), (0, 0, 0, 0))
+    image.putpixel((1, 0), (255, 188, 87, 210))
+    assert hashlib.sha256(image_png(image)).hexdigest() == (
+        "bf858141f594849a74707f9b6e33ac6fa58fd334fc7a6f02b6544e52d80d04c8"
+    )
+
+
+@pytest.mark.parametrize(
+    "contributors",
+    [
+        {},
+        [{"source": "hrrr"}, {"source": "hrrr"}],
+        [{"source": "tempo"}],
+        [{"source": "hrrr", "modelRun": "not-a-time"}],
+    ],
+)
+def test_python_contract_rejects_malformed_forecast_contributors(contributors) -> None:
+    pointer = json.loads(Path("public/demo/context/latest.json").read_text(encoding="utf-8"))
+    manifest = json.loads((Path("public/demo") / pointer["manifestPath"]).read_text(encoding="utf-8"))
+    manifest["forecast"]["frames"][0]["contributors"] = contributors
+    with pytest.raises(ValueError, match="contributor"):
+        validate_context_manifest(manifest)
 
 
 def _monitor(source: str, system: str = "us-epa-pm25-aqi") -> dict[str, object]:
@@ -108,6 +140,194 @@ def test_multiple_source_failures_do_not_discard_other_sections(tmp_path) -> Non
     assert manifest["sources"]["airnow"]["status"] == "error"
     assert manifest["sources"]["wfigs"]["status"] == "error"
     assert manifest["sources"]["cwfis"]["status"] == "error"
+
+
+def test_missing_airnow_key_never_restores_previous_observations(tmp_path) -> None:
+    settings = Settings(local_frame_dir=tmp_path, local_cache_dir=tmp_path / "cache", airnow_api_key="")
+    previous = {
+        "sources": {"airnow": {"observedAt": "2026-09-10T09:00:00Z"}},
+        "air": {
+            "monitorsUrl": "/data/context/assets/aaaaaaaaaaaaaaaaaaaa/airnow-monitors.json",
+            "monitorSets": {"airnow": {"url": "/data/context/assets/aaaaaaaaaaaaaaaaaaaa/airnow-monitors.json"}},
+        },
+    }
+    outcomes = {
+        name: SourceFailure(PermissionError("AIRNOW_API_KEY is not configured") if name == "airnow" else RuntimeError("offline"))
+        for name in ("airnow", "bcair", "sinaica", "aqhi", "wfigs", "cwfis")
+    }
+    manifest: dict[str, object] = {"sources": {}, "air": {}, "fires": {}}
+    apply_light_sources(manifest, outcomes, settings, NOW, previous, 8)
+    assert manifest["sources"]["airnow"]["status"] == "unavailable"
+    assert "monitorsUrl" not in manifest["air"]
+    assert "airnow" not in manifest["air"].get("monitorSets", {})
+
+
+def test_non_airnow_permission_failure_preserves_previous_observations(tmp_path) -> None:
+    settings = Settings(local_frame_dir=tmp_path, local_cache_dir=tmp_path / "cache", airnow_api_key="")
+    previous = {
+        "sources": {"bcair": {"observedAt": "2026-09-10T09:00:00Z"}},
+        "air": {
+            "bcMonitorsUrl": "/data/context/assets/aaaaaaaaaaaaaaaaaaaa/bc-monitors.json",
+            "monitorSets": {"bcair": {"url": "/data/context/assets/aaaaaaaaaaaaaaaaaaaa/bc-monitors.json"}},
+        },
+    }
+    outcomes = {
+        name: SourceFailure(PermissionError("publication directory is read-only") if name == "bcair" else RuntimeError("offline"))
+        for name in ("airnow", "bcair", "sinaica", "aqhi", "wfigs", "cwfis")
+    }
+    manifest: dict[str, object] = {"sources": {}, "air": {}, "fires": {}}
+    apply_light_sources(manifest, outcomes, settings, NOW, previous, 8)
+    assert manifest["sources"]["bcair"]["status"] == "error"
+    assert manifest["air"]["bcMonitorsUrl"] == previous["air"]["bcMonitorsUrl"]
+    assert manifest["air"]["monitorSets"]["bcair"] == previous["air"]["monitorSets"]["bcair"]
+
+
+@pytest.mark.parametrize(
+    ("api_key", "error"),
+    [
+        ("configured", PermissionError("upstream denied access")),
+        ("", RuntimeError("upstream unavailable")),
+    ],
+)
+def test_airnow_failure_is_unavailable_only_for_a_missing_key_permission_error(tmp_path, api_key, error) -> None:
+    settings = Settings(local_frame_dir=tmp_path, local_cache_dir=tmp_path / "cache", airnow_api_key=api_key)
+    previous = {
+        "sources": {"airnow": {"observedAt": "2026-09-10T09:00:00Z"}},
+        "air": {
+            "monitorsUrl": "/data/context/assets/aaaaaaaaaaaaaaaaaaaa/airnow-monitors.json",
+            "monitorSets": {"airnow": {"url": "/data/context/assets/aaaaaaaaaaaaaaaaaaaa/airnow-monitors.json"}},
+        },
+    }
+    outcomes = {
+        name: SourceFailure(error if name == "airnow" else RuntimeError("offline"))
+        for name in ("airnow", "bcair", "sinaica", "aqhi", "wfigs", "cwfis")
+    }
+    manifest: dict[str, object] = {"sources": {}, "air": {}, "fires": {}}
+
+    apply_light_sources(manifest, outcomes, settings, NOW, previous, 8)
+
+    assert manifest["sources"]["airnow"]["status"] == "error"
+    assert manifest["air"]["monitorsUrl"] == previous["air"]["monitorsUrl"]
+    assert manifest["air"]["monitorSets"]["airnow"] == previous["air"]["monitorSets"]["airnow"]
+
+
+def test_previous_publication_is_reused_only_for_matching_mode_and_valid_assets(tmp_path) -> None:
+    shutil.copytree("public/demo", tmp_path, dirs_exist_ok=True)
+    captured: list[dict | None] = []
+
+    def stop_after_admission(_settings, _store, _now, previous, _cache):
+        captured.append(previous)
+        raise RuntimeError("stop after admission")
+
+    settings = Settings(context_source="live", local_frame_dir=tmp_path, local_cache_dir=tmp_path / "cache")
+    with patch("ingest.context_pipeline._live_manifest", side_effect=stop_after_admission):
+        result = run_context_ingest(settings, NOW)
+    assert not result["ok"] and captured == [None]
+
+    settings = Settings(context_source="demo", local_frame_dir=tmp_path, local_cache_dir=tmp_path / "cache")
+    captured.clear()
+    with patch("ingest.context_pipeline._demo_manifest", side_effect=lambda _store, _now, _settings, previous: stop_after_admission(_settings, _store, _now, previous, None)):
+        result = run_context_ingest(settings, NOW)
+    assert not result["ok"] and captured[0] is not None
+
+    pointer = json.loads((tmp_path / "context/latest.json").read_text())
+    manifest = json.loads((tmp_path / pointer["manifestPath"]).read_text())
+    first_url = next(_asset_urls(manifest))
+    first_asset = tmp_path / ("context/assets/" + first_url.split("context/assets/", 1)[1])
+    first_asset.write_bytes(b"corrupt")
+    settings = Settings(context_source="demo", local_frame_dir=tmp_path, local_cache_dir=tmp_path / "cache")
+    captured.clear()
+    with patch("ingest.context_pipeline._demo_manifest", side_effect=lambda _store, _now, _settings, previous: stop_after_admission(_settings, _store, _now, previous, None)):
+        result = run_context_ingest(settings, NOW)
+    assert not result["ok"] and captured == [None]
+
+
+def _asset_urls(value):
+    if isinstance(value, dict):
+        for nested in value.values():
+            yield from _asset_urls(nested)
+    elif isinstance(value, list):
+        for nested in value:
+            yield from _asset_urls(nested)
+    elif isinstance(value, str) and "context/assets/" in value:
+        yield value
+
+
+def test_corrupt_asset_and_manifest_state_self_repair(tmp_path) -> None:
+    store = LocalFrameStore(tmp_path)
+    data = b'{"ok":true}'
+    digest = hashlib.sha256(data).hexdigest()[:20]
+    path = f"context/assets/{digest}/fixture.json"
+    store.put_bytes(path, b"corrupt", "application/json", cache_seconds=0, overwrite=True)
+    with ingest_run():
+        assert _put_asset(store, "fixture.json", data, "application/json") == store.url_for(path)
+    assert store.get_bytes(path) == data
+
+    manifest_path = "context/manifests/" + "a" * 20 + ".json"
+    store.put_bytes(manifest_path, b"{broken", "application/json", cache_seconds=0, overwrite=True)
+    store.put_json("context/latest.json", {"manifestPath": manifest_path}, cache_seconds=0, overwrite=True)
+    assert _previous_context(store) == (None, manifest_path)
+
+    store.put_json("context/latest.json", {"manifestPath": "context/status.json"}, cache_seconds=0, overwrite=True)
+    assert _previous_context(store) == (None, None)
+
+    store.put_bytes("context/latest.json", b"x" * (CONTEXT_JSON_BUDGET_BYTES + 1), "application/json", cache_seconds=0, overwrite=True)
+    assert _previous_context(store) == (None, None)
+
+    store.put_bytes("context/latest.json", b"\xff", "application/json", cache_seconds=0, overwrite=True)
+    assert _previous_context(store) == (None, None)
+
+    store.put_bytes(manifest_path, b"x" * (CONTEXT_JSON_BUDGET_BYTES + 1), "application/json", cache_seconds=0, overwrite=True)
+    store.put_json("context/latest.json", {"manifestPath": manifest_path}, cache_seconds=0, overwrite=True)
+    assert _previous_context(store) == (None, manifest_path)
+
+    store.put_bytes(manifest_path, b"\xff", "application/json", cache_seconds=0, overwrite=True)
+    assert _previous_context(store) == (None, manifest_path)
+
+
+@pytest.mark.parametrize("pointer, manifest", [([1], None), ({"manifestPath": "context/manifests/" + "b" * 20 + ".json"}, [])])
+def test_wrong_shaped_publication_metadata_does_not_block_self_repair(tmp_path, pointer, manifest) -> None:
+    store = LocalFrameStore(tmp_path)
+    if manifest is not None:
+        store.put_json(pointer["manifestPath"], manifest, cache_seconds=0, overwrite=True)
+    store.put_json("context/latest.json", pointer, cache_seconds=0, overwrite=True)
+    expected_path = pointer.get("manifestPath") if isinstance(pointer, dict) else None
+    assert _previous_context(store) == (None, expected_path)
+
+
+def test_store_atomically_replaces_final_symlink_and_rejects_ancestor_symlink(tmp_path) -> None:
+    store = LocalFrameStore(tmp_path)
+    store.put_bytes("context/latest.json", b"latest", "application/json", cache_seconds=0, overwrite=True)
+    (tmp_path / "context/status.json").symlink_to("latest.json")
+    with pytest.raises(ValueError, match="invalid store path"):
+        store.put_bytes("context/status.json", b"status", "application/json", cache_seconds=0, overwrite=False)
+    store.put_bytes("context/status.json", b"status", "application/json", cache_seconds=0, overwrite=True)
+    assert store.get_bytes("context/latest.json") == b"latest"
+    assert store.get_bytes("context/status.json") == b"status"
+
+    (tmp_path / "alias").symlink_to("context", target_is_directory=True)
+    with pytest.raises(ValueError, match="invalid store path"):
+        store.get_bytes("alias/latest.json")
+    with pytest.raises(ValueError, match="invalid store path"):
+        store.put_bytes("alias/latest.json", b"replaced", "application/json", cache_seconds=0, overwrite=True)
+    assert store.get_bytes("context/latest.json") == b"latest"
+
+
+def test_previous_publication_with_symlinked_asset_is_rebuilt(tmp_path) -> None:
+    store = LocalFrameStore(tmp_path)
+    data = b'{"ok":true}'
+    digest = hashlib.sha256(data).hexdigest()[:20]
+    asset_path = f"context/assets/{digest}/fixture.json"
+    target = tmp_path / "outside.json"
+    target.write_bytes(b"outside")
+    symlink = tmp_path / asset_path
+    symlink.parent.mkdir(parents=True)
+    symlink.symlink_to(target)
+    with ingest_run():
+        assert not _seed_asset_memo(store, {"fixtureUrl": store.url_for(asset_path)})
+        assert _put_asset(store, "fixture.json", data, "application/json") == store.url_for(asset_path)
+    assert store.get_bytes(asset_path) == data
+    assert target.read_bytes() == b"outside"
 
 
 def test_local_store_is_atomic_persistent_and_confines_paths(tmp_path) -> None:

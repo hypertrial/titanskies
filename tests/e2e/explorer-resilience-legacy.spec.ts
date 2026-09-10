@@ -250,6 +250,18 @@ test("recovers after geographic context fails", async ({ page }) => {
   expect(requests).toBeGreaterThan(failedRequests);
 });
 
+test("contains a failed Earth texture and retries without unmounting the app", async ({ page }) => {
+  let fail = true;
+  await page.route("**/geo/earth-dark-v2.webp", (route) => fail ? route.abort("failed") : route.continue());
+  await page.goto("/");
+  await expect(page.getByTestId("error-state")).toContainText("This view couldn’t load", { timeout: 20_000 });
+  await expect(page.getByTestId("source-badge")).toBeVisible();
+  fail = false;
+  await page.getByRole("button", { name: "Retry" }).click();
+  await waitForReady(page);
+  await expect(page.getByTestId("error-state")).toHaveCount(0);
+});
+
 test("retries failed forecast textures at unchanged URLs", async ({ page }) => {
   let fail = true;
   let requests = 0;

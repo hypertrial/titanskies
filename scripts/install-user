@@ -11,17 +11,29 @@ config_home=${XDG_CONFIG_HOME:-"$HOME/.config"}
 data_home=${XDG_DATA_HOME:-"$HOME/.local/share"}
 state_home=${XDG_STATE_HOME:-"$HOME/.local/state"}
 cache_home=${XDG_CACHE_HOME:-"$HOME/.cache"}
-safe_base() {
+validate_path_text() {
+  case "$2" in *'|'*|*'&'*|*'%'*|*'\'*|*'"'*) fail "$1 contains unsupported characters" ;; esac
+  if printf '%s' "$2" | LC_ALL=C grep -q '[[:cntrl:]]'; then fail "$1 contains control characters"; fi
+}
+canonical_base() {
   case "$2" in
     /|"") fail "$1 must be a non-root absolute path" ;;
     /*) ;;
     *) fail "$1 must be an absolute path" ;;
   esac
+  validate_path_text "$1" "$2"
+  canonical_input=$2
+  while [ "${canonical_input#//}" != "$canonical_input" ]; do canonical_input=${canonical_input#/}; done
+  mkdir -p "$canonical_input"
+  canonical=$(CDPATH='' cd -- "$canonical_input" && pwd -P) || fail "$1 could not be resolved"
+  [ "$canonical" != / ] || fail "$1 must not resolve to the filesystem root"
+  validate_path_text "$1" "$canonical"
+  printf '%s\n' "$canonical"
 }
-safe_base XDG_CONFIG_HOME "$config_home"
-safe_base XDG_DATA_HOME "$data_home"
-safe_base XDG_STATE_HOME "$state_home"
-safe_base XDG_CACHE_HOME "$cache_home"
+config_home=$(canonical_base XDG_CONFIG_HOME "$config_home")
+data_home=$(canonical_base XDG_DATA_HOME "$data_home")
+state_home=$(canonical_base XDG_STATE_HOME "$state_home")
+cache_home=$(canonical_base XDG_CACHE_HOME "$cache_home")
 config_dir=$config_home/titanskies
 install_dir=$data_home/titanskies
 release_dir=$install_dir/releases/$version
@@ -45,6 +57,38 @@ if [ ! -f "$config_dir/env" ]; then
 fi
 chmod 600 "$config_dir/env"
 
+env_value() { sed -n "s/^$1=//p" "$config_dir/env" | tail -n 1; }
+configured_data=$(env_value TITANSKIES_DATA_DIR)
+configured_cache=$(env_value TITANSKIES_CACHE_DIR)
+configured_bind=$(env_value TITANSKIES_BIND_ADDR)
+configured_port=$(env_value TITANSKIES_PORT)
+[ -n "$configured_data" ] || configured_data=$state_dir
+[ -n "$configured_cache" ] || configured_cache=$cache_dir
+[ -n "$configured_bind" ] || configured_bind=127.0.0.1
+[ -n "$configured_port" ] || configured_port=8080
+canonical_runtime_base() {
+  case "$2" in
+    /|"") fail "$1 must be a non-root absolute path" ;;
+    /*) ;;
+    *) fail "$1 must be an absolute path" ;;
+  esac
+  validate_path_text "$1" "$2"
+  canonical=$(python3 -c 'import os, sys; print(os.path.realpath(os.path.abspath(sys.argv[1])))' "$2")
+  [ "$canonical" != / ] || fail "$1 must not resolve to the filesystem root"
+  validate_path_text "$1" "$canonical"
+  case "$canonical/" in
+    "$install_dir/releases/"*|"$install_dir/current/"*) fail "$1 must be outside the versioned release directory" ;;
+  esac
+  mkdir -p "$canonical"
+  printf '%s\n' "$canonical"
+}
+configured_data=$(canonical_runtime_base TITANSKIES_DATA_DIR "$configured_data")
+configured_cache=$(canonical_runtime_base TITANSKIES_CACHE_DIR "$configured_cache")
+case "$configured_bind" in 127.0.0.1|0.0.0.0) browser_host=127.0.0.1 ;; ::1) browser_host='[::1]' ;; *) fail "TITANSKIES_BIND_ADDR must be 127.0.0.1, ::1, or 0.0.0.0" ;; esac
+case "$configured_port" in ''|*[!0-9]*) fail "TITANSKIES_PORT must be an integer from 1 to 65535" ;; esac
+[ "$configured_port" -ge 1 ] 2>/dev/null && [ "$configured_port" -le 65535 ] 2>/dev/null || fail "TITANSKIES_PORT must be an integer from 1 to 65535"
+app_url=http://$browser_host:$configured_port
+
 staging=$install_dir/releases/.${version}.new
 rm -rf "$staging"
 mkdir -p "$staging"
@@ -59,14 +103,47 @@ rm -rf "$release_dir"
 mv "$staging" "$release_dir"
 
 old_target=
-if [ -L "$install_dir/current" ]; then old_target=$(readlink "$install_dir/current"); fi
+if [ -L "$install_dir/current" ]; then
+  candidate=$(readlink "$install_dir/current")
+  case "$candidate" in
+    releases/*)
+      old_version=${candidate#releases/}
+      node -e 'process.exit(/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:[-+][0-9A-Za-z.-]+)?$/.test(process.argv[1]) ? 0 : 1)' "$old_version" \
+        || fail "current release link is unsafe"
+      [ -d "$install_dir/$candidate" ] || fail "current release link is missing its target"
+      old_target=$candidate
+      ;;
+    *) fail "current release link is unsafe" ;;
+  esac
+fi
 ln -s "releases/$version" "$install_dir/.current.$version"
 mv -Tf "$install_dir/.current.$version" "$install_dir/current"
+activated=1
+rollback() {
+  code=$?
+  trap - EXIT HUP INT TERM
+  if [ "$activated" -eq 1 ]; then
+    if [ -n "$old_target" ]; then
+      ln -s "$old_target" "$install_dir/.rollback"
+      mv -Tf "$install_dir/.rollback" "$install_dir/current"
+      systemctl --user restart titanskies-web.service >/dev/null 2>&1 || true
+    else
+      systemctl --user disable --now titanskies-web.service titanskies-ingest.timer >/dev/null 2>&1 || true
+      systemctl --user stop titanskies-ingest.service >/dev/null 2>&1 || true
+      rm -f "$install_dir/current"
+    fi
+  fi
+  exit "$code"
+}
+trap rollback EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
-sed -e "s|@CURRENT@|$install_dir/current|g" -e "s|@ENV@|$config_dir/env|g" -e "s|@STATE@|$state_dir|g" -e "s|@CACHE@|$cache_dir|g" "$root/packaging/systemd/titanskies-web.service" > "$unit_dir/titanskies-web.service"
-sed -e "s|@CURRENT@|$install_dir/current|g" -e "s|@ENV@|$config_dir/env|g" -e "s|@STATE@|$state_dir|g" -e "s|@CACHE@|$cache_dir|g" "$root/packaging/systemd/titanskies-ingest.service" > "$unit_dir/titanskies-ingest.service"
+sed -e "s|@CURRENT@|$install_dir/current|g" -e "s|@ENV@|$config_dir/env|g" -e "s|@DATA@|$configured_data|g" -e "s|@CACHE@|$configured_cache|g" "$root/packaging/systemd/titanskies-web.service" > "$unit_dir/titanskies-web.service"
+sed -e "s|@CURRENT@|$install_dir/current|g" -e "s|@ENV@|$config_dir/env|g" -e "s|@DATA@|$configured_data|g" -e "s|@CACHE@|$configured_cache|g" "$root/packaging/systemd/titanskies-ingest.service" > "$unit_dir/titanskies-ingest.service"
 cp "$root/packaging/systemd/titanskies-ingest.timer" "$unit_dir/titanskies-ingest.timer"
-sed "s|@URL@|http://127.0.0.1:8080|" "$root/packaging/titanskies.desktop" > "$desktop_dir/titanskies.desktop"
+sed "s|@URL@|$app_url|" "$root/packaging/titanskies.desktop" > "$desktop_dir/titanskies.desktop"
 cp "$root/app/icon.png" "$icon_dir/titanskies.png"
 
 systemctl --user daemon-reload
@@ -77,16 +154,13 @@ systemctl --user start titanskies-ingest.service
 
 ready=0
 for _attempt in 1 2 3 4 5 6 7 8 9 10; do
-  if node -e "fetch('http://127.0.0.1:8080/api/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"; then ready=1; break; fi
+  if node -e "fetch('$app_url/api/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"; then ready=1; break; fi
   sleep 2
 done
 if [ "$ready" -ne 1 ]; then
-  if [ -n "$old_target" ]; then
-    ln -s "$old_target" "$install_dir/.rollback"
-    mv -Tf "$install_dir/.rollback" "$install_dir/current"
-    systemctl --user restart titanskies-web.service
-  fi
   fail "web self-check failed; the previous release was restored when available."
 fi
 
-printf 'TitanSkies %s is running at http://127.0.0.1:8080\n' "$version"
+activated=0
+trap - EXIT HUP INT TERM
+printf 'TitanSkies %s is running at %s\n' "$version" "$app_url"

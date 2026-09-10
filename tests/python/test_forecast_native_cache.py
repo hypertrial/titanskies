@@ -182,6 +182,13 @@ def test_unreadable_native_cache_index_starts_empty(tmp_path) -> None:
     assert NativeFieldCache(store).index == {}
 
 
+def test_wrong_shaped_native_cache_index_starts_empty(tmp_path) -> None:
+    store = LocalFrameStore(tmp_path)
+    for payload in (b"[]", b"null", b'"value"', b'{"entries":[]}'):
+        store.put_bytes(NATIVE_FIELD_CACHE_INDEX_PATH, payload, "application/json", cache_seconds=60, overwrite=True)
+        assert NativeFieldCache(store).index == {}
+
+
 def test_native_cache_drops_negative_and_nonfinite_samples() -> None:
     field = _field(GeographicGrid(width=4, height=3, lon0=-145.0, lat0=72.0, dx=0.1, dy=0.1))
     field.values[1, 1] = -2

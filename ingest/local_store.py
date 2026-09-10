@@ -62,12 +62,20 @@ class LocalFrameStore:
         self.url_prefix = "/" + url_prefix.strip("/")
         self.root.mkdir(parents=True, exist_ok=True)
 
-    def _path(self, pathname: str) -> Path:
+    def _path(self, pathname: str, *, allow_final_symlink: bool = False) -> Path:
         relative = Path(pathname)
         if relative.is_absolute() or not relative.parts or ".." in relative.parts:
             raise ValueError("invalid store path")
-        path = (self.root / relative).resolve()
-        if not path.is_relative_to(self.root):
+        path = self.root / relative
+        current = self.root
+        for index, part in enumerate(relative.parts):
+            current /= part
+            if current.is_symlink():
+                if allow_final_symlink and index == len(relative.parts) - 1:
+                    continue
+                raise ValueError("invalid store path")
+        containment_path = path.parent.resolve() if allow_final_symlink else path.resolve()
+        if not containment_path.is_relative_to(self.root):
             raise ValueError("invalid store path")
         return path
 
@@ -90,7 +98,7 @@ class LocalFrameStore:
     def put_bytes(self, pathname: str, data: bytes, content_type: str, *, cache_seconds: int, overwrite: bool) -> str:
         del content_type, cache_seconds
         _check_operation_deadline()
-        path = self._path(pathname)
+        path = self._path(pathname, allow_final_symlink=overwrite)
         if path.exists() and not overwrite:
             return self.url_for(pathname)
         path.parent.mkdir(parents=True, exist_ok=True)

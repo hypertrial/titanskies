@@ -150,8 +150,10 @@ def run_context_ingest(settings: Settings | None = None, now: datetime | None = 
             previous_status = load_json(store, CONTEXT_STATUS_PATH)
             if not isinstance(previous_status, dict) and previous:
                 previous_status = context_status_from_manifest(previous)
-            _seed_asset_memo(previous)
             live = settings.context_source == "live"
+            reusable_previous = previous if previous and previous.get("mode") == settings.context_source else None
+            if reusable_previous is not None and not _seed_asset_memo(store, reusable_previous):
+                reusable_previous = None
             cache_store = open_cache_store(settings)
             native_cache = NativeFieldCache(
                 cache_store,
@@ -160,9 +162,9 @@ def run_context_ingest(settings: Settings | None = None, now: datetime | None = 
             active_forecast_cache = native_cache if live else None
             with timed_phase("build"):
                 manifest = (
-                    _live_manifest(settings, store, now, previous, native_cache)
+                    _live_manifest(settings, store, now, reusable_previous, native_cache)
                     if live
-                    else _demo_manifest(store, now, settings, previous=previous)
+                    else _demo_manifest(store, now, settings, previous=reusable_previous)
                 )
             if not _complete_integrated(
                 manifest.get("forecast"),

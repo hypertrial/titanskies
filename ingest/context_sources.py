@@ -287,12 +287,15 @@ def apply_light_sources(
         }[source]
         restored = {key: prior_air[key] for key in keys if key in prior_air}
         prior_set = (prior_air.get("monitorSets") or {}).get(source)
+        missing_key = source == "airnow" and not settings.airnow_api_key and isinstance(exc, PermissionError)
+        if missing_key:
+            manifest["sources"][source] = _state(source, now, None, status="unavailable", error=str(exc))
+            continue
         if prior_set:
             monitor_sets[source] = prior_set
             if keys:
                 restored.setdefault("monitorsUrl" if source == "airnow" else keys[0], prior_set.get("url"))
         air.update(restored)
-        missing_key = isinstance(exc, PermissionError)
         if prior_state and (restored or prior_set):
             observed_raw = prior_state.get("observedAt")
             observed = datetime.fromisoformat(observed_raw.replace("Z", "+00:00")) if observed_raw else None
@@ -302,7 +305,7 @@ def apply_light_sources(
             )
         else:
             manifest["sources"][source] = _state(
-                source, now, None, status="unavailable" if missing_key else "error", error=str(exc)
+                source, now, None, status="error", error=str(exc)
             )
     if monitor_sets:
         air["monitorSets"] = monitor_sets

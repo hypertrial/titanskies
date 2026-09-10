@@ -217,10 +217,12 @@ class RunBudget:
     def remaining(self) -> float:
         return self.seconds - (time.perf_counter() - self.started)
 
-    def acquisition_remaining(self) -> float:
+    def finalization_reserve(self) -> float:
         reserve = _ACQUISITION_RESERVE.get()
-        reserved = min(reserve, self.seconds) if reserve is not None else min(FINALIZE_RESERVE_SECONDS, self.seconds * 0.2)
-        return self.remaining() - reserved
+        return min(reserve, self.seconds) if reserve is not None else min(FINALIZE_RESERVE_SECONDS, self.seconds * 0.2)
+
+    def acquisition_remaining(self) -> float:
+        return self.remaining() - self.finalization_reserve()
 
     def allow(self, estimated: float, *, reason: str) -> bool:
         if self.remaining() >= estimated:

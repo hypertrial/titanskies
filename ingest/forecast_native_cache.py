@@ -226,9 +226,10 @@ class NativeFieldCache:
                 raise
             raw = None
         try:
-            entries = json.loads(raw or "{}").get("entries", {})
+            root = json.loads(raw or "{}")
         except json.JSONDecodeError:
-            entries = {}
+            root = {}
+        entries = root.get("entries", {}) if isinstance(root, dict) else {}
         if isinstance(entries, dict):
             self.index = {key: path for key, path in entries.items() if isinstance(key, str) and isinstance(path, str) and _FIELD_PATH.fullmatch(path)}
 

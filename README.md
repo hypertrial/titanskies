@@ -53,7 +53,7 @@ Normal uninstall preserves configuration, publications, and cache:
 ./scripts/uninstall-user
 ```
 
-Use `./scripts/uninstall-user --purge` only when you also want those files removed.
+Use `./scripts/uninstall-user --purge` only when you also want the default configuration, publication, and cache directories removed. Custom `TITANSKIES_DATA_DIR` or `TITANSKIES_CACHE_DIR` locations are preserved and must be removed manually.
 
 ## Source development
 
@@ -96,6 +96,12 @@ See [`.env.example`](.env.example). The stable public settings are:
 | `CONTEXT_SOURCE` | `live` | `live` or explicit network-free `demo` |
 | `FRAME_RETENTION_HOURS` | `48` | Local retention window |
 | `AIRNOW_API_KEY` | empty | Optional AirNow API key |
+| `INGEST_BUDGET_SECONDS` | `300` | Maximum ingest runtime budget |
+| `INGEST_HTTP_CONCURRENCY` | `12` | Global provider request limit |
+| `CONTEXT_SOURCE_CONCURRENCY` | `3` | Concurrent observation/incident sources |
+| `HRRR_CONCURRENCY` | `4` | Concurrent HRRR forecast work |
+| `FIREWORK_CONCURRENCY` | `6` | Concurrent FireWork forecast work |
+| `SINAICA_CONCURRENCY` | `4` | Concurrent SINAICA station work |
 
 ### LAN exposure
 

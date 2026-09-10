@@ -17,11 +17,47 @@ export type ForecastRasterWorkerMessage = ForecastRasterWorkerRequest | Forecast
 export type ForecastRasterWorkerReply = ForecastRasterWorkerSuccess | ForecastRasterWorkerFailure;
 
 const controllers = new Map<number, AbortController>();
+const IMAGE_TIMEOUT_MS = 15_000;
+
+async function decodeBitmap(blob: Blob, signal: AbortSignal): Promise<ImageBitmap> {
+  const pending = createImageBitmap(blob, { premultiplyAlpha: "none" });
+  pending.then((image) => { if (signal.aborted) image.close(); }, () => undefined);
+  if (signal.aborted) throw signal.reason;
+  let onAbort: (() => void) | undefined;
+  try {
+    const image = await Promise.race([
+      pending,
+      new Promise<never>((_, reject) => {
+        onAbort = () => reject(signal.reason);
+        signal.addEventListener("abort", onAbort, { once: true });
+      }),
+    ]);
+    if (signal.aborted) {
+      image.close();
+      throw signal.reason;
+    }
+    return image;
+  } finally {
+    if (onAbort) signal.removeEventListener("abort", onAbort);
+  }
+}
 
 async function bitmap(url: string, signal: AbortSignal): Promise<ImageBitmap> {
-  const response = await fetch(url, { signal });
-  if (!response.ok) throw new Error(`Failed to fetch texture ${url}`);
-  return createImageBitmap(await response.blob(), { premultiplyAlpha: "none" });
+  const controller = new AbortController();
+  const abort = () => controller.abort(signal.reason);
+  if (signal.aborted) abort();
+  else signal.addEventListener("abort", abort, { once: true });
+  const deadline = setTimeout(() => controller.abort(new DOMException("Timed out", "TimeoutError")), IMAGE_TIMEOUT_MS);
+  try {
+    const response = await fetch(url, { signal: controller.signal });
+    if (!response.ok) throw new Error(`Failed to fetch texture ${url}`);
+    const blob = await response.blob();
+    if (controller.signal.aborted) throw controller.signal.reason;
+    return await decodeBitmap(blob, controller.signal);
+  } finally {
+    clearTimeout(deadline);
+    signal.removeEventListener("abort", abort);
+  }
 }
 
 function rgba(image: ImageBitmap): Uint8ClampedArray {

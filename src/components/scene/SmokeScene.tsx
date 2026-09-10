@@ -7,9 +7,9 @@ import { inspectLabelInsets, placeHoverLabel } from "@/rendering/hoverLabelLayou
 import { keyboardInspectSelection, shouldInspectMapClick } from "@/data/inspectPoint";
 import { inspectPointerFromEvent, isInspectClick, type InspectPointer, type InspectPointerEvent } from "@/rendering/inspectClick";
 import { adaptiveDpr, cameraGestureProfile, CAMERA_FOV, cameraSafeInsets, fitOverviewDistance, locationCameraPosition, MIN_CAMERA_DISTANCE, overviewResetDistance, visibleDetailTiles } from "@/rendering/camera";
-import { Html, OrbitControls } from "@react-three/drei";
+import { Html, OrbitControls, useTexture } from "@react-three/drei";
 import { Canvas, useFrame, useThree } from "@react-three/fiber";
-import { Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { Component, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Color, MathUtils, Vector3 } from "three";
 import type { Camera } from "three";
 import type { OrbitControls as OrbitControlsImpl } from "three-stdlib";
@@ -22,6 +22,33 @@ const CAMERA_LON = -100;
 const CAMERA_LAT = 52;
 const initialCamera = () => lonLatToVector3(CAMERA_LON, CAMERA_LAT, 3).toArray();
 const radians = (degrees: number) => degrees * Math.PI / 180;
+
+class SceneAssetBoundary extends Component<{
+  children: ReactNode;
+  resetKey: number;
+  onError: (message: string) => void;
+}, { failed: boolean }> {
+  state = { failed: false };
+
+  static getDerivedStateFromError() {
+    return { failed: true };
+  }
+
+  componentDidCatch(error: Error) {
+    this.props.onError(error.message || "Unable to load the globe texture.");
+  }
+
+  componentDidUpdate(previous: Readonly<{ resetKey: number }>) {
+    if (this.state.failed && previous.resetKey !== this.props.resetKey) {
+      useTexture.clear("/geo/earth-dark-v2.webp");
+      this.setState({ failed: false });
+    }
+  }
+
+  render() {
+    return this.state.failed ? null : this.props.children;
+  }
+}
 
 function syncInspectLabel(
   element: HTMLDivElement,
@@ -137,6 +164,8 @@ type SmokeSceneProps = {
   onSelect: (selection: MapSelection | null) => void;
   onMapClick: (payload: { lon: number; lat: number }) => void;
   onDetailTiles: (tiles: number[]) => void;
+  sceneRetryKey: number;
+  onSceneError: (message: string) => void;
 };
 
 function CameraControls({ resetSignal, focusLocation, zoomSignal, controlsRef, mobile, reducedMotion, detailGrid, onInteraction, onDetailTiles }: { resetSignal: number; focusLocation: { lon: number; lat: number; requestId: number } | null; zoomSignal: number; controlsRef: React.RefObject<OrbitControlsImpl | null>; mobile: boolean; reducedMotion: boolean; detailGrid: DetailGridShape; onInteraction: (active: boolean) => void; onDetailTiles: (tiles: number[]) => void }) {
@@ -295,6 +324,8 @@ export function SmokeScene({
   onSelect,
   onMapClick,
   onDetailTiles,
+  sceneRetryKey,
+  onSceneError,
 }: SmokeSceneProps) {
   const [keyboardActive, setKeyboardActive] = useState(false);
   const keyboardCursor = useRef({ lon: CAMERA_LON, lat: CAMERA_LAT });
@@ -402,8 +433,12 @@ export function SmokeScene({
         scene.background = new Color("#03080e");
       }}
     >
+      <SceneAssetBoundary resetKey={sceneRetryKey} onError={onSceneError}>
+        <Suspense fallback={null}>
+          <EarthGlobe mobile={mobile || compactLabels} geo={geo} onReady={onReady} />
+        </Suspense>
+      </SceneAssetBoundary>
       <Suspense fallback={null}>
-        <EarthGlobe mobile={mobile || compactLabels} geo={geo} onReady={onReady} />
         {(legacyForecast ? contextImageA : residentRasters.length > 0) && layers.forecast ? legacyForecast ? (
           <LegacyContextSurface imageA={contextImageA!} imageB={contextImageB} mixRef={contextMixRef} opacityRef={smokeOpacityRef} onReady={onLayerReady} />
         ) : (

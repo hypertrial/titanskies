@@ -52,6 +52,12 @@ describe("v8 context", () => {
     const retired = structuredClone(manifest);
     retired.sources.hms = { ...retired.sources.airnow };
     expect(isContextManifest(retired)).toBe(false);
+    for (const contributors of [{}, [{ source: "hrrr" }, { source: "hrrr" }], [{ source: "other" }], [{ source: "hrrr", modelRun: "invalid" }]]) {
+      const invalid = structuredClone(manifest);
+      invalid.forecast.frames[0].contributors = contributors;
+      invalid.forecasts.best.frames[0].contributors = contributors;
+      expect(isContextManifest(invalid)).toBe(false);
+    }
   });
 
   it("maps all sixteen detail tiles without gaps", () => {

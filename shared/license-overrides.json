@@ -2,6 +2,10 @@
   "schemaVersion": 1,
   "lastReviewed": "2026-09-10",
   "packages": {
+    "colorama": {
+      "license": "BSD-3-Clause",
+      "source": "https://github.com/tartley/colorama/blob/master/LICENSE.txt"
+    },
     "webgl-constants": {
       "license": "MIT",
       "source": "https://github.com/immersive-web/webgl-constants/blob/main/LICENSE"

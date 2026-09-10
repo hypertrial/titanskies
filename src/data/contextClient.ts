@@ -73,6 +73,7 @@ export async function loadContext(url = contextPointerUrl()): Promise<ContextMan
 }
 
 export const CONTEXT_POINTER_POLL_MS = 2 * 60_000;
+export const CONTEXT_IMAGE_TIMEOUT_MS = 15_000;
 
 function forecastTimelineEntries(manifest: ContextManifest, nowMs = Date.now()): TimelineEntry[] {
   return visibleForecastRun(manifest, uiForecastHorizonHours(manifest), nowMs).frames.map((frame, index) => ({
@@ -126,19 +127,68 @@ export function playbackPositionAfterContextRefresh(args: {
   return positionForTime(entries, previousStart + args.previousPositionMs);
 }
 
+async function decodeBitmap(blob: Blob, signal: AbortSignal): Promise<ImageBitmap> {
+  const pending = createImageBitmap(blob, { premultiplyAlpha: "none" });
+  pending.then((image) => { if (signal.aborted) image.close(); }, () => undefined);
+  if (signal.aborted) throw signal.reason;
+  let onAbort: (() => void) | undefined;
+  try {
+    const image = await Promise.race([
+      pending,
+      new Promise<never>((_, reject) => {
+        onAbort = () => reject(signal.reason);
+        signal.addEventListener("abort", onAbort, { once: true });
+      }),
+    ]);
+    if (signal.aborted) {
+      image.close();
+      throw signal.reason;
+    }
+    return image;
+  } finally {
+    if (onAbort) signal.removeEventListener("abort", onAbort);
+  }
+}
+
 
 export async function loadContextImage(url: string, signal?: AbortSignal): Promise<ImageBitmap | HTMLImageElement> {
-  const response = await fetch(url, { signal });
-  if (!response.ok) throw new Error(`Failed to fetch texture ${url}`);
-  const blob = await response.blob();
-  if ("createImageBitmap" in window) return createImageBitmap(blob, { premultiplyAlpha: "none" });
-  return new Promise((resolve, reject) => {
-    const image = new Image();
-    const objectUrl = URL.createObjectURL(blob);
-    image.onload = () => { URL.revokeObjectURL(objectUrl); resolve(image); };
-    image.onerror = () => { URL.revokeObjectURL(objectUrl); reject(new Error(`Unable to decode texture ${url}`)); };
-    image.src = objectUrl;
-  });
+  const controller = new AbortController();
+  const abort = () => controller.abort(signal?.reason);
+  if (signal?.aborted) abort();
+  else signal?.addEventListener("abort", abort, { once: true });
+  const deadline = setTimeout(() => controller.abort(new DOMException("Timed out", "TimeoutError")), CONTEXT_IMAGE_TIMEOUT_MS);
+  try {
+    const response = await fetch(url, { signal: controller.signal });
+    if (!response.ok) throw new Error(`Failed to fetch texture ${url}`);
+    const blob = await response.blob();
+    if (controller.signal.aborted) throw controller.signal.reason;
+    if ("createImageBitmap" in window) return await decodeBitmap(blob, controller.signal);
+    return await new Promise((resolve, reject) => {
+      const image = new Image();
+      const objectUrl = URL.createObjectURL(blob);
+      const cleanup = () => {
+        controller.signal.removeEventListener("abort", abortDecode);
+        URL.revokeObjectURL(objectUrl);
+      };
+      const abortDecode = () => {
+        image.src = "";
+        cleanup();
+        reject(controller.signal.reason);
+      };
+      controller.signal.addEventListener("abort", abortDecode, { once: true });
+      image.onload = () => { cleanup(); resolve(image); };
+      image.onerror = () => { cleanup(); reject(new Error(`Unable to decode texture ${url}`)); };
+      image.src = objectUrl;
+    });
+  } catch (error) {
+    if (controller.signal.reason instanceof DOMException && controller.signal.reason.name === "TimeoutError") {
+      throw new Error("Forecast image request timed out. Please try again.");
+    }
+    throw error;
+  } finally {
+    clearTimeout(deadline);
+    signal?.removeEventListener("abort", abort);
+  }
 }
 
 export function closeContextImage(image: ImageBitmap | HTMLImageElement | null): void {

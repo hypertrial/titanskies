@@ -42,6 +42,8 @@ def test_demo_status_omits_only_nondeterministic_timings() -> None:
         "sourceSeconds": {},
         "providerPhaseSeconds": {},
         "forecastWaveSeconds": None,
+        "deadlineSkips": ["cleanup"],
+        "splitRecommended": True,
         "forecastExpectedFrames": 37,
         "publicationStatus": "fresh",
     }

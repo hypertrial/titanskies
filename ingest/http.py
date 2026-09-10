@@ -10,7 +10,7 @@ import requests
 from requests.adapters import HTTPAdapter
 
 from ingest.auth import redact
-from ingest.perf import bounded_timeout, current_metrics, record_http
+from ingest.perf import bounded_timeout, current_budget, current_metrics, record_http
 
 DEFAULT_TIMEOUT = 60
 DEFAULT_MAX_BYTES = 5 * 1024 * 1024
@@ -182,12 +182,17 @@ def _request(
             request_timeout = bounded_timeout(timeout)
             if request_timeout is None:
                 raise HttpFetchError("ingest acquisition deadline reached", host=host, provider_outage=True)
+            budget = current_budget()
+            requests_timeout: float | tuple[float, float] = request_timeout
+            if budget is not None:
+                read_timeout = min(request_timeout, max(1.0, budget.finalization_reserve() / 2))
+                requests_timeout = (request_timeout, read_timeout)
             with _session().request(
                 method,
                 url,
                 params=params,
                 data=data,
-                timeout=request_timeout,
+                timeout=requests_timeout,
                 stream=True,
                 allow_redirects=False,
                 headers={"User-Agent": USER_AGENT, "Accept": "*/*"},
@@ -226,12 +231,16 @@ def _request(
                 chunks: list[bytes] = []
                 size = 0
                 for chunk in response.iter_content(64 * 1024):
+                    if bounded_timeout(timeout) is None:
+                        raise HttpFetchError("ingest acquisition deadline reached", host=host, retryable=False, provider_outage=True)
                     if not chunk:
                         continue
                     size += len(chunk)
                     if size > max_bytes:
                         raise RuntimeError(f"response exceeds {max_bytes} bytes")
                     chunks.append(chunk)
+                if bounded_timeout(timeout) is None:
+                    raise HttpFetchError("ingest acquisition deadline reached", host=host, retryable=False, provider_outage=True)
                 body = b"".join(chunks)
                 record_http(bytes_in=len(body), bytes_out=len(data) if isinstance(data, (bytes, str)) else 0)
                 return body

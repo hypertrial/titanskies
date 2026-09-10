@@ -1,11 +1,18 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
+import shutil
+import shlex
 import stat
 import subprocess
+import sys
 import tarfile
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
+
+from ingest.context_contracts import CONTEXT_RASTER_BUDGET_BYTES
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -31,7 +38,7 @@ fi
 exit 0
 """,
     )
-    _executable(fake_bin / "python3", "exit 0\n")
+    _executable(fake_bin / "python3", f'exec {shlex.quote(sys.executable)} "$@"\n')
     _executable(fake_bin / "uv", "exit 0\n")
     _executable(
         fake_bin / "npm",
@@ -42,7 +49,13 @@ fi
 exit 0
 """,
     )
-    _executable(fake_bin / "systemctl", 'printf "%s\\n" "$*" >> "$FAKE_COMMAND_LOG"\nexit 0\n')
+    _executable(
+        fake_bin / "systemctl",
+        'printf "%s\\n" "$*" >> "$FAKE_COMMAND_LOG"\n'
+        'if [ -n "${FAKE_INSTALL_SIGNAL:-}" ] && [ "$*" = "--user start titanskies-ingest.service" ]; then kill "-${FAKE_INSTALL_SIGNAL}" "$PPID"; exit 0; fi\n'
+        'if [ "${FAKE_INGEST_EXIT:-0}" -ne 0 ] && [ "$*" = "--user start titanskies-ingest.service" ]; then exit "$FAKE_INGEST_EXIT"; fi\n'
+        "exit 0\n",
+    )
     _executable(fake_bin / "sleep", "exit 0\n")
     _executable(
         fake_bin / "mv",
@@ -94,6 +107,16 @@ def test_user_install_rollback_and_uninstall(tmp_path: Path) -> None:
     assert current.readlink() == Path("releases/0.0.9")
     assert "previous release was restored" in failed.stderr
 
+    failed_ingest = subprocess.run(
+        [ROOT / "scripts/install-user"],
+        cwd=ROOT,
+        env={**env, "FAKE_INGEST_EXIT": "1"},
+        capture_output=True,
+        text=True,
+    )
+    assert failed_ingest.returncode != 0
+    assert current.readlink() == Path("releases/0.0.9")
+
     subprocess.run([ROOT / "scripts/uninstall-user"], cwd=ROOT, env=env, check=True)
     assert not install.exists()
     assert config.exists()
@@ -106,15 +129,106 @@ def test_user_install_rollback_and_uninstall(tmp_path: Path) -> None:
     assert not (tmp_path / "cache/titanskies").exists()
 
 
+def test_failed_first_install_leaves_no_active_release(tmp_path: Path) -> None:
+    env, _ = _fake_environment(tmp_path)
+    result = subprocess.run(
+        [ROOT / "scripts/install-user"],
+        cwd=ROOT,
+        env={**env, "FAKE_INGEST_EXIT": "1"},
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode != 0
+    assert not (tmp_path / "data/titanskies/current").exists()
+
+
 def test_install_and_uninstall_reject_unsafe_xdg_roots(tmp_path: Path) -> None:
     env, _ = _fake_environment(tmp_path)
-    unsafe = {**env, "XDG_DATA_HOME": "/"}
-    install = subprocess.run([ROOT / "scripts/install-user"], cwd=ROOT, env=unsafe, capture_output=True, text=True)
-    uninstall = subprocess.run([ROOT / "scripts/uninstall-user", "--purge"], cwd=ROOT, env=unsafe, capture_output=True, text=True)
-    assert install.returncode != 0
-    assert uninstall.returncode != 0
-    assert "non-root absolute path" in install.stderr
-    assert "non-root absolute path" in uninstall.stderr
+    root_alias = tmp_path / "root-alias"
+    root_alias.symlink_to("/", target_is_directory=True)
+    for value in ("/", "//", "/tmp/..", str(root_alias)):
+        unsafe = {**env, "XDG_DATA_HOME": value}
+        install = subprocess.run([ROOT / "scripts/install-user"], cwd=ROOT, env=unsafe, capture_output=True, text=True)
+        uninstall = subprocess.run([ROOT / "scripts/uninstall-user", "--purge"], cwd=ROOT, env=unsafe, capture_output=True, text=True)
+        assert install.returncode != 0, value
+        assert uninstall.returncode != 0, value
+        assert "root" in install.stderr
+        assert "root" in uninstall.stderr
+
+
+def test_installer_revalidates_xdg_path_after_resolving_symlinks(tmp_path: Path) -> None:
+    env, _ = _fake_environment(tmp_path)
+    unsafe_target = tmp_path / "data&systemd-placeholder"
+    unsafe_target.mkdir()
+    alias = tmp_path / "data-alias"
+    alias.symlink_to(unsafe_target, target_is_directory=True)
+
+    result = subprocess.run(
+        [ROOT / "scripts/install-user"],
+        cwd=ROOT,
+        env={**env, "XDG_DATA_HOME": str(alias)},
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode != 0
+    assert "unsupported characters" in result.stderr
+    assert not (unsafe_target / "titanskies/current").exists()
+
+
+def test_failed_first_install_removes_activation_and_stops_web(tmp_path: Path) -> None:
+    env, log = _fake_environment(tmp_path)
+    result = subprocess.run(
+        [ROOT / "scripts/install-user"],
+        cwd=ROOT,
+        env={**env, "FAKE_NODE_HEALTH_EXIT": "1"},
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode != 0
+    assert not (tmp_path / "data/titanskies/current").exists()
+    commands = log.read_text(encoding="utf-8")
+    assert "disable --now titanskies-web.service titanskies-ingest.timer" in commands
+    assert "stop titanskies-ingest.service" in commands
+
+
+def test_first_install_signals_roll_back_and_exit_nonzero(tmp_path: Path) -> None:
+    for signal in ("HUP", "INT", "TERM"):
+        case = tmp_path / signal.lower()
+        case.mkdir()
+        env, log = _fake_environment(case)
+
+        result = subprocess.run(
+            [ROOT / "scripts/install-user"],
+            cwd=ROOT,
+            env={**env, "FAKE_INSTALL_SIGNAL": signal},
+            capture_output=True,
+            text=True,
+        )
+
+        assert result.returncode != 0, signal
+        assert not (case / "data/titanskies/current").exists()
+        commands = log.read_text(encoding="utf-8")
+        assert "disable --now titanskies-web.service titanskies-ingest.timer" in commands
+        assert "stop titanskies-ingest.service" in commands
+
+
+def test_uninstall_rejects_symlinked_installation_directory(tmp_path: Path) -> None:
+    env, log = _fake_environment(tmp_path)
+    data_home = Path(env["XDG_DATA_HOME"])
+    data_home.mkdir()
+    external = tmp_path / "external"
+    (external / "releases").mkdir(parents=True)
+    marker = external / "releases/keep"
+    marker.write_text("keep", encoding="utf-8")
+    (data_home / "titanskies").symlink_to(external, target_is_directory=True)
+
+    result = subprocess.run([ROOT / "scripts/uninstall-user"], cwd=ROOT, env=env, capture_output=True, text=True)
+
+    assert result.returncode != 0
+    assert "must not be a symlink" in result.stderr
+    assert marker.read_text(encoding="utf-8") == "keep"
+    assert not log.exists()
 
 
 def test_uninstall_rejects_unknown_arguments(tmp_path: Path) -> None:
@@ -201,13 +315,299 @@ def test_signed_update_binds_checksum_to_exact_archive_name(tmp_path: Path) -> N
 def test_container_services_share_one_hardened_image_and_local_port() -> None:
     dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
     compose = (ROOT / "compose.yaml").read_text(encoding="utf-8")
-    assert "FROM node:22-bookworm-slim AS build" in dockerfile
-    assert "FROM node:22-bookworm-slim AS runtime" in dockerfile
+    assert dockerfile.startswith("# syntax=docker/dockerfile:1.7@sha256:")
+    assert dockerfile.count("FROM node:22-bookworm-slim@sha256:") == 2
+    assert dockerfile.count("node:22-bookworm-slim@sha256:") == 2
+    assert "FROM ghcr.io/astral-sh/uv:0.8.22@sha256:" in dockerfile
+    for line in (line for line in dockerfile.splitlines() if line.startswith("FROM ")):
+        assert line.split("@sha256:", 1)[1].split()[0].isalnum()
+        assert len(line.split("@sha256:", 1)[1].split()[0]) == 64
+    assert "pip install" not in dockerfile
     assert "USER node" in dockerfile
     assert "image: ghcr.io/hypertrial/titanskies:" in compose
     assert compose.count("<<: *service") == 2
-    assert '"127.0.0.1:${TITANSKIES_PORT:-8080}:8080"' in compose
+    assert "host_ip: ${TITANSKIES_BIND_ADDR:-127.0.0.1}" in compose
+    assert "published: ${TITANSKIES_PORT:-8080}" in compose
+    assert sum(line.strip().startswith("AIRNOW_API_KEY:") for line in compose.splitlines()) == 1
+    assert "FRAME_RETENTION_HOURS: ${FRAME_RETENTION_HOURS:-48}" in compose
     assert "read_only: true" in compose
     assert "cap_drop: [ALL]" in compose
     assert 'security_opt: ["no-new-privileges:true"]' in compose
     assert "data:/var/lib/titanskies:ro" in compose
+
+
+def test_installer_applies_documented_runtime_configuration(tmp_path: Path) -> None:
+    env, _ = _fake_environment(tmp_path)
+    config = tmp_path / "config/titanskies/env"
+    config.parent.mkdir(parents=True)
+    configured_data = tmp_path / "publications"
+    configured_cache = tmp_path / "model-cache"
+    config.write_text(
+        f"TITANSKIES_DATA_DIR={configured_data}\n"
+        f"TITANSKIES_CACHE_DIR={configured_cache}\n"
+        "TITANSKIES_BIND_ADDR=0.0.0.0\n"
+        "TITANSKIES_PORT=9090\n",
+        encoding="utf-8",
+    )
+
+    subprocess.run([ROOT / "scripts/install-user"], cwd=ROOT, env=env, check=True)
+
+    web = (tmp_path / "config/systemd/user/titanskies-web.service").read_text(encoding="utf-8")
+    ingest = (tmp_path / "config/systemd/user/titanskies-ingest.service").read_text(encoding="utf-8")
+    desktop = (tmp_path / "data/applications/titanskies.desktop").read_text(encoding="utf-8")
+    assert f'ReadOnlyPaths="{configured_data}"' in web
+    assert f'ReadWritePaths="{configured_data}" "{configured_cache}"' in ingest
+    assert "http://127.0.0.1:9090" in desktop
+    assert configured_data.is_dir()
+    assert configured_cache.is_dir()
+
+
+def test_installer_rejects_invalid_runtime_configuration_before_activation(tmp_path: Path) -> None:
+    cases = (
+        "TITANSKIES_PORT=0\n",
+        "TITANSKIES_PORT=65536\n",
+        "TITANSKIES_PORT=eighty\n",
+        "TITANSKIES_BIND_ADDR=192.0.2.1\n",
+        "TITANSKIES_DATA_DIR=relative/path\n",
+        'TITANSKIES_DATA_DIR=/tmp/data" "/tmp/extra\n',
+        "TITANSKIES_DATA_DIR=//\n",
+        "TITANSKIES_DATA_DIR=/tmp/..\n",
+    )
+    for index, config_text in enumerate(cases):
+        case = tmp_path / str(index)
+        case.mkdir()
+        env, _ = _fake_environment(case)
+        config = case / "config/titanskies/env"
+        config.parent.mkdir(parents=True)
+        config.write_text(config_text, encoding="utf-8")
+        result = subprocess.run([ROOT / "scripts/install-user"], cwd=ROOT, env=env, capture_output=True, text=True)
+        assert result.returncode != 0, config_text
+        assert not (case / "data/titanskies/current").exists()
+
+
+def test_installer_rejects_publications_or_cache_inside_versioned_releases(tmp_path: Path) -> None:
+    env, _ = _fake_environment(tmp_path)
+    install_dir = tmp_path / "data/titanskies"
+    paths = (
+        install_dir / "releases",
+        install_dir / "releases/publications",
+        install_dir / "current",
+        install_dir / "current/cache",
+    )
+    for index, configured in enumerate(paths):
+        config = tmp_path / "config/titanskies/env"
+        config.parent.mkdir(parents=True, exist_ok=True)
+        key = "TITANSKIES_DATA_DIR" if index % 2 == 0 else "TITANSKIES_CACHE_DIR"
+        config.write_text(f"{key}={configured}\n", encoding="utf-8")
+        result = subprocess.run([ROOT / "scripts/install-user"], cwd=ROOT, env=env, capture_output=True, text=True)
+        assert result.returncode != 0, configured
+        assert "outside the versioned release directory" in result.stderr
+        assert not (install_dir / "current").exists()
+
+
+def test_installer_rejects_runtime_symlink_alias_into_versioned_releases(tmp_path: Path) -> None:
+    env, _ = _fake_environment(tmp_path)
+    install_dir = tmp_path / "data/titanskies"
+    forbidden = install_dir / "releases/0.0.9/publications"
+    forbidden.mkdir(parents=True)
+    alias = tmp_path / "publication-alias"
+    alias.symlink_to(forbidden, target_is_directory=True)
+    config = tmp_path / "config/titanskies/env"
+    config.parent.mkdir(parents=True)
+    config.write_text(f"TITANSKIES_DATA_DIR={alias}\n", encoding="utf-8")
+
+    result = subprocess.run([ROOT / "scripts/install-user"], cwd=ROOT, env=env, capture_output=True, text=True)
+
+    assert result.returncode != 0
+    assert "outside the versioned release directory" in result.stderr
+    assert not (install_dir / "current").exists()
+
+
+def test_installer_revalidates_runtime_path_after_resolving_symlinks(tmp_path: Path) -> None:
+    env, _ = _fake_environment(tmp_path)
+    unsafe_target = tmp_path / "publications&systemd-placeholder"
+    unsafe_target.mkdir()
+    alias = tmp_path / "publication-alias"
+    alias.symlink_to(unsafe_target, target_is_directory=True)
+    config = tmp_path / "config/titanskies/env"
+    config.parent.mkdir(parents=True)
+    config.write_text(f"TITANSKIES_DATA_DIR={alias}\n", encoding="utf-8")
+
+    result = subprocess.run([ROOT / "scripts/install-user"], cwd=ROOT, env=env, capture_output=True, text=True)
+
+    assert result.returncode != 0
+    assert "unsupported characters" in result.stderr
+    assert not (tmp_path / "data/titanskies/current").exists()
+
+
+def test_normal_uninstall_preserves_state_when_xdg_roots_overlap(tmp_path: Path) -> None:
+    env, _ = _fake_environment(tmp_path)
+    shared = tmp_path / "shared"
+    env.update({"XDG_DATA_HOME": str(shared), "XDG_STATE_HOME": str(shared)})
+    subprocess.run([ROOT / "scripts/install-user"], cwd=ROOT, env=env, check=True)
+    marker = shared / "titanskies/operator-data"
+    marker.write_text("keep", encoding="utf-8")
+
+    subprocess.run([ROOT / "scripts/uninstall-user"], cwd=ROOT, env=env, check=True)
+
+    assert marker.read_text(encoding="utf-8") == "keep"
+    assert not (shared / "titanskies/releases").exists()
+
+
+def test_uninstall_preserves_custom_data_and_cache_even_with_purge(tmp_path: Path) -> None:
+    env, _ = _fake_environment(tmp_path)
+    custom_data = tmp_path / "custom-data"
+    custom_cache = tmp_path / "custom-cache"
+    config = tmp_path / "config/titanskies/env"
+    config.parent.mkdir(parents=True)
+    config.write_text(
+        f"TITANSKIES_DATA_DIR={custom_data}\nTITANSKIES_CACHE_DIR={custom_cache}\n",
+        encoding="utf-8",
+    )
+    subprocess.run([ROOT / "scripts/install-user"], cwd=ROOT, env=env, check=True)
+    (custom_data / "keep").write_text("data", encoding="utf-8")
+    (custom_cache / "keep").write_text("cache", encoding="utf-8")
+
+    result = subprocess.run([ROOT / "scripts/uninstall-user", "--purge"], cwd=ROOT, env=env, check=True, capture_output=True, text=True)
+
+    assert (custom_data / "keep").read_text(encoding="utf-8") == "data"
+    assert (custom_cache / "keep").read_text(encoding="utf-8") == "cache"
+    assert "Custom data or cache paths are preserved" in result.stdout
+
+
+def test_persistent_timer_uses_calendar_schedule() -> None:
+    timer = (ROOT / "packaging/systemd/titanskies-ingest.timer").read_text(encoding="utf-8")
+    assert "OnCalendar=*:0/15" in timer
+    assert "Persistent=true" in timer
+    assert "OnUnitActiveSec" not in timer
+
+
+def test_license_report_includes_every_locked_python_variant(tmp_path: Path) -> None:
+    for name in ("package-lock.json", "uv.lock"):
+        shutil.copy2(ROOT / name, tmp_path / name)
+    shutil.copytree(ROOT / "shared", tmp_path / "shared")
+    scripts = tmp_path / "scripts"
+    scripts.mkdir()
+    shutil.copy2(ROOT / "scripts/license_report.py", scripts / "license_report.py")
+
+    subprocess.run([ROOT / "scripts/run_python.sh", scripts / "license_report.py"], cwd=ROOT, check=True)
+
+    report = json.loads((tmp_path / "artifacts/license-report.json").read_text(encoding="utf-8"))
+    locked = {(item["name"], item["version"]) for item in report["python"]}
+    assert ("numpy", "2.4.6") in locked
+    assert ("numpy", "2.5.3") in locked
+    assert ("tifffile", "2026.3.3") in locked
+    assert ("tifffile", "2026.9.9") in locked
+
+
+def _publication_for_probe(tmp_path: Path) -> tuple[Path, Path, dict, bytes]:
+    source_root = ROOT / "public/demo"
+    source_pointer = json.loads((source_root / "context/latest.json").read_text(encoding="utf-8"))
+    shutil.copytree(source_root / "context/assets", tmp_path / "context/assets")
+    manifest = json.loads((source_root / source_pointer["manifestPath"]).read_text(encoding="utf-8"))
+    generated = datetime.fromisoformat(manifest["generatedAt"].replace("Z", "+00:00"))
+    now = datetime.now(timezone.utc)
+    target = now.replace(minute=0, second=0, microsecond=0)
+    delta = target - generated
+
+    def shift(value):
+        if isinstance(value, dict):
+            return {key: shift(child) for key, child in value.items()}
+        if isinstance(value, list):
+            return [shift(child) for child in value]
+        if isinstance(value, str) and value.endswith("Z"):
+            try:
+                return (datetime.fromisoformat(value.replace("Z", "+00:00")) + delta).isoformat().replace("+00:00", "Z")
+            except ValueError:
+                return value
+        return value
+
+    manifest = shift(manifest)
+
+    def localize(value):
+        if isinstance(value, dict):
+            return {key: localize(child) for key, child in value.items()}
+        if isinstance(value, list):
+            return [localize(child) for child in value]
+        return value.replace("/demo/context/assets/", "/data/context/assets/") if isinstance(value, str) else value
+
+    manifest = localize(manifest)
+    encoded = json.dumps(manifest, separators=(",", ":"), sort_keys=True).encode()
+    digest = hashlib.sha256(encoded).hexdigest()[:20]
+    manifest_path = tmp_path / f"context/manifests/{digest}.json"
+    manifest_path.parent.mkdir(parents=True)
+    manifest_path.write_bytes(encoded)
+    pointer = {
+        "version": 8,
+        "manifestPath": f"context/manifests/{digest}.json",
+        "manifestUrl": f"/data/context/manifests/{digest}.json",
+        "updatedAt": target.isoformat().replace("+00:00", "Z"),
+    }
+    (tmp_path / "context/latest.json").write_text(json.dumps(pointer), encoding="utf-8")
+    status = {
+        "version": 1,
+        "outcome": "fresh",
+        "contextVersion": 8,
+        "lastAttemptAt": (now - timedelta(minutes=45)).isoformat().replace("+00:00", "Z"),
+        "lastCompleteForecastAt": (now - timedelta(minutes=45)).isoformat().replace("+00:00", "Z"),
+    }
+    (tmp_path / "context/status.json").write_text(json.dumps(status), encoding="utf-8")
+    return manifest_path, tmp_path / "context/latest.json", manifest, encoded
+
+
+def test_publication_probe_checks_configured_freshness_and_all_content_hashes(tmp_path: Path) -> None:
+    manifest_path, pointer_path, manifest, encoded = _publication_for_probe(tmp_path)
+    env = {**os.environ, "TITANSKIES_DATA_DIR": str(tmp_path), "CONTEXT_WATCH_SECONDS": "3600"}
+
+    def probe() -> int:
+        return subprocess.run(
+            [sys.executable, ROOT / "scripts/check-publication.py"],
+            cwd=ROOT,
+            env=env,
+            timeout=10,
+        ).returncode
+
+    assert probe() == 0
+
+    pointer = json.loads(pointer_path.read_text(encoding="utf-8"))
+    pointer_path.write_text(json.dumps({**pointer, "manifestUrl": "https://example.invalid/manifest.json"}), encoding="utf-8")
+    assert probe() == 1
+    pointer_path.write_text(json.dumps(pointer), encoding="utf-8")
+
+    manifest_path.write_bytes(encoded + b"\n")
+    assert probe() == 1
+    manifest_path.write_bytes(encoded)
+
+    asset = tmp_path / manifest["forecast"]["legendUrl"].removeprefix("/data/")
+    original_asset = asset.read_bytes()
+    asset.write_bytes(b"corrupt")
+    assert probe() == 1
+
+    asset.unlink()
+    asset.symlink_to("/etc/hosts")
+    assert probe() == 1
+
+    asset.unlink()
+    os.mkfifo(asset)
+    assert probe() == 1
+
+    asset.unlink()
+    asset.write_bytes(b"x" * (CONTEXT_RASTER_BUDGET_BYTES + 1))
+    assert probe() == 1
+
+    asset.write_bytes(original_asset)
+    assert probe() == 0
+
+    aqhi_asset = tmp_path / manifest["air"]["monitorSets"]["aqhi"]["url"].removeprefix("/data/")
+    aqhi_bytes = aqhi_asset.read_bytes()
+    aqhi_asset.unlink()
+    assert probe() == 1
+    aqhi_asset.write_bytes(aqhi_bytes)
+    assert probe() == 0
+
+
+def test_workflows_pin_every_third_party_action_to_a_full_commit() -> None:
+    for workflow in (ROOT / ".github/workflows/ci.yml", ROOT / ".github/workflows/release.yml"):
+        uses = [line.split("@", 1)[1].split()[0] for line in workflow.read_text(encoding="utf-8").splitlines() if "uses:" in line]
+        assert uses
+        assert all(len(revision) == 40 and all(character in "0123456789abcdef" for character in revision) for revision in uses)

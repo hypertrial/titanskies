@@ -326,6 +326,20 @@ def _validate_forecast_run(
         valid_times.append(_require_iso(frame.get("validTime"), f"{label} valid time"))
         if frame.get("modelRun") is not None:
             _require_iso(frame.get("modelRun"), f"{label} frame model run")
+        contributors = frame.get("contributors")
+        if contributors is not None:
+            if not isinstance(contributors, list):
+                raise ValueError(f"invalid {label} contributors")
+            seen_contributors: set[str] = set()
+            for contributor in contributors:
+                if not isinstance(contributor, dict) or contributor.get("source") not in SOURCE_METADATA_MODELS:
+                    raise ValueError(f"invalid {label} contributor")
+                source = contributor["source"]
+                if source in seen_contributors:
+                    raise ValueError(f"duplicate {label} contributor")
+                seen_contributors.add(source)
+                if contributor.get("modelRun") is not None:
+                    _require_iso(contributor["modelRun"], f"{label} contributor model run")
         if any(frame.get(key) is not None for key in forbidden):
             raise ValueError(f"{label} frame includes private numeric fields")
         if metadata_only:

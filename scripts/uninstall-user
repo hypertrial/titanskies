@@ -18,20 +18,34 @@ safe_base() {
     /*) ;;
     *) fail "$1 must be an absolute path" ;;
   esac
+  canonical_input=$2
+  while [ "${canonical_input#//}" != "$canonical_input" ]; do canonical_input=${canonical_input#/}; done
+  if [ -d "$canonical_input" ]; then
+    canonical=$(CDPATH='' cd -- "$canonical_input" && pwd -P) || fail "$1 could not be resolved"
+  else
+    canonical=$canonical_input
+  fi
+  [ "$canonical" != / ] || fail "$1 must not resolve to the filesystem root"
+  printf '%s\n' "$canonical"
 }
-safe_base XDG_CONFIG_HOME "$config_home"
-safe_base XDG_DATA_HOME "$data_home"
-safe_base XDG_STATE_HOME "$state_home"
-safe_base XDG_CACHE_HOME "$cache_home"
+config_home=$(safe_base XDG_CONFIG_HOME "$config_home")
+data_home=$(safe_base XDG_DATA_HOME "$data_home")
+state_home=$(safe_base XDG_STATE_HOME "$state_home")
+cache_home=$(safe_base XDG_CACHE_HOME "$cache_home")
+install_dir=$data_home/titanskies
+[ ! -L "$install_dir" ] || fail "installation directory must not be a symlink"
 
 systemctl --user disable --now titanskies-web.service titanskies-ingest.timer >/dev/null 2>&1 || true
 systemctl --user stop titanskies-ingest.service >/dev/null 2>&1 || true
 rm -f "$config_home/systemd/user/titanskies-web.service" "$config_home/systemd/user/titanskies-ingest.service" "$config_home/systemd/user/titanskies-ingest.timer" "$data_home/applications/titanskies.desktop" "$data_home/icons/hicolor/512x512/apps/titanskies.png"
 systemctl --user daemon-reload
-rm -rf "$data_home/titanskies"
+rm -rf "$install_dir/releases"
+rm -f "$install_dir/current" "$install_dir/.rollback"
+find "$install_dir" -maxdepth 1 -type l -name '.current.*' -delete 2>/dev/null || true
+rmdir "$install_dir" 2>/dev/null || true
 if [ "$purge" -eq 1 ]; then
   rm -rf "$config_home/titanskies" "$state_home/titanskies" "$cache_home/titanskies"
-  echo "TitanSkies and its configuration, publications, and cache were removed."
+  echo "TitanSkies and its default configuration, publications, and cache were removed. Custom data or cache paths are preserved and must be removed manually."
 else
   echo "TitanSkies was removed. Configuration and data were preserved; pass --purge to remove them."
 fi

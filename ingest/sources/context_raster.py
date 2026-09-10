@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import zlib
 from typing import Iterable
 
 from PIL import Image, ImageDraw
@@ -44,7 +45,13 @@ def lon_lat_to_pixel(lon: float, lat: float) -> tuple[int, int]:
 
 def image_png(image: Image.Image) -> bytes:
     output = io.BytesIO()
-    image.save(output, format="PNG", optimize=True)
+    image.save(
+        output,
+        format="PNG",
+        optimize=False,
+        compress_level=9,
+        compress_type=zlib.Z_RLE,
+    )
     return output.getvalue()
 
 

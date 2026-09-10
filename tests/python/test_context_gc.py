@@ -103,7 +103,7 @@ def test_configured_retention_controls_orphan_deletion(publication):
     assert store.get_bytes(ORPHAN) is None
 
 
-@pytest.mark.parametrize("change", ["lease_owner", "lease_expired", "pointer", "malformed_state", "future_state", "unsafe_path"])
+@pytest.mark.parametrize("change", ["lease_owner", "lease_expired", "pointer", "future_state", "unsafe_path"])
 def test_unsafe_reconciliation_fails_closed(publication, change):
     store, lease, pointer, _ = publication
     run(publication)
@@ -123,6 +123,56 @@ def test_unsafe_reconciliation_fails_closed(publication, change):
         store.put_json(STATE_PATH, state, cache_seconds=0, overwrite=True)
     run(publication, later)
     assert store.get_bytes(ORPHAN)
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        b"{broken",
+        b"\xff",
+        {"version": 2},
+        {"version": 1, "nextPrefix": 0, "cursors": [None, None], "pending": [], "lastSweep": [None, None]},
+    ],
+)
+def test_invalid_reconciliation_state_resets_and_resumes_discovery(publication, payload):
+    store = publication[0]
+    if isinstance(payload, bytes):
+        store.put_bytes(STATE_PATH, payload, "application/json", cache_seconds=0, overwrite=True)
+    else:
+        store.put_json(STATE_PATH, payload, cache_seconds=0, overwrite=True)
+    run(publication)
+    state = json.loads(store.get_text(STATE_PATH))
+    assert state["version"] == 1
+    assert state["pending"][ORPHAN] == NOW.timestamp()
+    later = NOW + timedelta(hours=48)
+    renew(publication, later)
+    run(publication, later)
+    assert store.get_bytes(ORPHAN) is None
+
+
+def test_oversized_reconciliation_state_resets_and_resumes_discovery(publication):
+    store = publication[0]
+    store.put_bytes(STATE_PATH, b"x" * (16 * 1024 * 1024 + 1), "application/json", cache_seconds=0, overwrite=True)
+    run(publication)
+    state = json.loads(store.get_text(STATE_PATH))
+    assert state["version"] == 1
+    assert state["pending"][ORPHAN] == NOW.timestamp()
+
+
+def test_symlinked_reconciliation_state_is_replaced_without_touching_its_target(publication, tmp_path):
+    store = publication[0]
+    outside = tmp_path / "outside.json"
+    outside.write_text("keep", encoding="utf-8")
+    state_path = store.root / STATE_PATH
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+    state_path.symlink_to(outside)
+
+    run(publication)
+
+    state = json.loads(store.get_text(STATE_PATH))
+    assert state["version"] == 1
+    assert state["pending"][ORPHAN] == NOW.timestamp()
+    assert outside.read_text(encoding="utf-8") == "keep"
 
 
 def test_referenced_candidate_resets_grace(publication):

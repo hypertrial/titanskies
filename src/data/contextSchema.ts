@@ -372,6 +372,12 @@ function isForecastRun(
     if (metadataOnly && (frame.textureUrl !== undefined || frame.sourceMaskUrl !== undefined)) return false;
     const time = Date.parse(String(frame.validTime));
     const detailTiles = frame.detailTiles;
+    const contributors = frame.contributors;
+    const validContributors = contributors === undefined || (Array.isArray(contributors)
+      && new Set(contributors.map((item) => isRecord(item) ? item.source : null)).size === contributors.length
+      && contributors.every((item) => isRecord(item)
+        && (item.source === "hrrr" || item.source === "firework")
+        && (item.modelRun === undefined || isIso(item.modelRun))));
     const grid = gridForVersion(version);
     const validDetail = !requireDetail || (grid && Array.isArray(detailTiles) && detailTiles.length === grid.columns * grid.rows
       && detailTiles.every((tile, index) => isRecord(tile)
@@ -380,6 +386,7 @@ function isForecastRun(
     const valid = isIso(frame.validTime) && time > priorForecast && !forecastTimes.has(time)
       && (metadataOnly || isUrl(frame.textureUrl))
       && (frame.modelRun === undefined || isIso(frame.modelRun))
+      && validContributors
       && (frame.sourceMaskUrl === undefined || isUrl(frame.sourceMaskUrl))
       && (!requireMask || frames.length === 0 || isUrl(frame.sourceMaskUrl));
     if (!validDetail || (!requireDetail && detailTiles !== undefined)) return false;

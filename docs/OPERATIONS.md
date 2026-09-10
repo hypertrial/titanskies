@@ -20,7 +20,9 @@ Back up `TITANSKIES_DATA_DIR` (or `$XDG_STATE_HOME/titanskies`) while ingest is 
 
 Container updates are explicit: verify the signed GHCR manifest, change `TITANSKIES_VERSION` to the desired `vX.Y.Z` tag, run `docker compose pull`, then `docker compose up -d`. Keep the old image until `/api/healthz` succeeds and `/api/context-health` reports a valid publication.
 
-Native updates use `scripts/update-user`, which verifies the release archive checksum and keyless signature before invoking the versioned installer. A failed web self-check restores the prior `current` symlink. Older releases remain under `$XDG_DATA_HOME/titanskies/releases` for manual rollback.
+Native updates use `scripts/update-user`, which verifies the release archive checksum and keyless signature before invoking the versioned installer. A failed activation, immediate ingest, or web self-check restores the prior `current` symlink. A failed first installation disables the new services and timer. Older releases remain under `$XDG_DATA_HOME/titanskies/releases` for manual rollback.
+
+Native `TITANSKIES_DATA_DIR` and `TITANSKIES_CACHE_DIR` values must be non-root absolute paths outside the versioned release directory. The installer resolves symlinks before rendering the systemd filesystem boundaries; uninstall refuses a symlinked installation directory. Purge removes the default XDG publication/cache directories, while custom paths are preserved for explicit manual removal.
 
 ## Troubleshooting
 

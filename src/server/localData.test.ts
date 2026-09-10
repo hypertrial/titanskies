@@ -1,10 +1,10 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { createHash } from "node:crypto";
-import { mkdtemp, mkdir, symlink, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, symlink, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
-import { readLocalDataFile } from "./localData";
+import { isLocalContextPointer, localManifestAssetsAvailable, readLocalDataFile } from "./localData";
 
 const previousRoot = process.env.TITANSKIES_DATA_DIR;
 
@@ -15,11 +15,19 @@ async function root(): Promise<string> {
 }
 
 afterEach(() => {
+  vi.useRealTimers();
   if (previousRoot === undefined) delete process.env.TITANSKIES_DATA_DIR;
   else process.env.TITANSKIES_DATA_DIR = previousRoot;
 });
 
 describe("local publication reader", () => {
+  it("accepts only canonical local context pointers", () => {
+    const manifestPath = "context/manifests/aaaaaaaaaaaaaaaaaaaa.json";
+    const pointer = { version: 8, manifestPath, manifestUrl: `/data/${manifestPath}`, updatedAt: "2026-09-10T12:00:00Z" };
+    expect(isLocalContextPointer(pointer)).toBe(true);
+    expect(isLocalContextPointer({ ...pointer, manifestUrl: "https://example.invalid/manifest.json" })).toBe(false);
+    expect(isLocalContextPointer({ ...pointer, manifestPath: "../manifest.json" })).toBe(false);
+  });
   it("serves only allowlisted mutable and hashed publication paths", async () => {
     const directory = await root();
     const png = Buffer.from("89504e470d0a1a0a", "hex");
@@ -65,5 +73,30 @@ describe("local publication reader", () => {
     await expect(readLocalDataFile(["context", "status.json"])).resolves.toBeNull();
     await expect(readLocalDataFile(["context", "assets", "aaaaaaaaaaaaaaaaaaaa", "smoke.png"])).resolves.toBeNull();
     await expect(readLocalDataFile(["context", "assets", "bbbbbbbbbbbbbbbbbbbb", "data.json"])).resolves.toBeNull();
+  });
+
+  it("deduplicates successful immutable-manifest asset verification", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-09-10T12:00:00Z"));
+    const directory = await root();
+    const body = Buffer.from("{}");
+    const digest = createHash("sha256").update(body).digest("hex").slice(0, 20);
+    const pathname = `context/assets/${digest}/data.json`;
+    await mkdir(path.join(directory, `context/assets/${digest}`), { recursive: true });
+    await writeFile(path.join(directory, pathname), body);
+    const manifest = { dataUrl: `/data/${pathname}` };
+
+    const first = localManifestAssetsAvailable("context/manifests/aaaaaaaaaaaaaaaaaaaa.json", manifest);
+    const concurrent = localManifestAssetsAvailable("context/manifests/aaaaaaaaaaaaaaaaaaaa.json", manifest);
+    expect(concurrent).toBe(first);
+    await expect(first).resolves.toBe(true);
+    expect(localManifestAssetsAvailable("context/manifests/aaaaaaaaaaaaaaaaaaaa.json", manifest)).toBe(first);
+    await unlink(path.join(directory, pathname));
+    await vi.advanceTimersByTimeAsync(59_999);
+    expect(localManifestAssetsAvailable("context/manifests/aaaaaaaaaaaaaaaaaaaa.json", manifest)).toBe(first);
+    await vi.advanceTimersByTimeAsync(1);
+    const revalidated = localManifestAssetsAvailable("context/manifests/aaaaaaaaaaaaaaaaaaaa.json", manifest);
+    expect(revalidated).not.toBe(first);
+    await expect(revalidated).resolves.toBe(false);
   });
 });

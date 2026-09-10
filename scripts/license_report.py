@@ -4,6 +4,7 @@ from __future__ import annotations
 import importlib.metadata
 import fnmatch
 import json
+import tomllib
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -33,11 +34,25 @@ for location, package in lock["packages"].items():
     if not accepted(license_name):
         failures.append(f"npm:{name}:{license_name}")
 
+installed = {
+    (distribution.metadata.get("Name") or "").lower().replace("_", "-"): distribution
+    for distribution in importlib.metadata.distributions()
+}
 python = []
-for distribution in sorted(importlib.metadata.distributions(), key=lambda item: (item.metadata.get("Name") or "").lower()):
-    name = distribution.metadata.get("Name") or "UNKNOWN"
-    license_name = OVERRIDES.get(name.lower(), {}).get("license") or distribution.metadata.get("License-Expression") or distribution.metadata.get("License") or "UNKNOWN"
-    python.append({"name": name, "version": distribution.version, "license": license_name})
+uv_lock = tomllib.loads((ROOT / "uv.lock").read_text(encoding="utf-8"))
+locked = sorted({
+    (item["name"], item["version"])
+    for item in uv_lock.get("package", [])
+    if isinstance(item, dict) and isinstance(item.get("source"), dict) and "registry" in item["source"]
+})
+for name, version in locked:
+    normalized = name.lower().replace("_", "-")
+    distribution = installed.get(normalized)
+    license_name = OVERRIDES.get(normalized, {}).get("license") \
+        or (distribution.metadata.get("License-Expression") if distribution else None) \
+        or (distribution.metadata.get("License") if distribution else None) \
+        or "UNKNOWN"
+    python.append({"name": name, "version": version, "license": license_name})
     if not accepted(license_name):
         failures.append(f"python:{name}:{license_name}")
 

@@ -1,5 +1,5 @@
 import { isContextManifest, type ContextManifest, type ContextSource, type SourceState } from "@/data/contextSchema";
-import { readLocalJson } from "@/server/localData";
+import { isLocalContextPointer, localManifestAssetsAvailable, readLocalJson } from "@/server/localData";
 
 const DEFAULT_WATCH_SECONDS = 900;
 const MIN_WATCH_SECONDS = 60;
@@ -82,22 +82,13 @@ export async function GET(request: Request): Promise<Response> {
       ]);
       if (!validStatus(statusValue)) issues.push("invalid-status");
       else status = statusValue;
-      const pointer = pointerValue as { version?: unknown; manifestPath?: unknown; manifestUrl?: unknown; updatedAt?: unknown };
-      const manifestPath = typeof pointer.manifestPath === "string"
-        ? pointer.manifestPath
-        : typeof pointer.manifestUrl === "string" && pointer.manifestUrl.startsWith("/data/")
-          ? pointer.manifestUrl.slice("/data/".length)
-          : "";
-      if (
-        pointer.version !== 8
-        || !/^context\/manifests\/[0-9a-f]{20}\.json$/.test(manifestPath)
-        || !iso(pointer.updatedAt)
-      ) {
+      if (!isLocalContextPointer(pointerValue)) {
         issues.push("invalid-pointer");
       } else {
-        pointerUpdatedAt = pointer.updatedAt;
-        const value = await readLocalJson(manifestPath);
-        if (!isContextManifest(value) || value.version !== pointer.version) issues.push("invalid-manifest");
+        pointerUpdatedAt = pointerValue.updatedAt;
+        const value = await readLocalJson(pointerValue.manifestPath);
+        if (!isContextManifest(value) || value.version !== pointerValue.version) issues.push("invalid-manifest");
+        else if (!await localManifestAssetsAvailable(pointerValue.manifestPath, value)) issues.push("invalid-assets");
         else manifest = value;
       }
     } catch {

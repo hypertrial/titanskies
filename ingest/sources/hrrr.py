@@ -87,8 +87,7 @@ def nomads_filter_url(base: str, run: datetime, hour: int) -> str:
 
 
 def parse_hrrr_index(text: str) -> bool:
-    haystack = text.upper()
-    return "MASSDEN" in haystack and "8 M ABOVE GROUND" in haystack
+    return any("MASSDEN" in record and "8 M ABOVE GROUND" in record for record in text.upper().splitlines())
 
 
 def _get_text(url: str, *, timeout: int = 30, max_bytes: int = IDX_MAX_BYTES) -> str:
@@ -151,7 +150,7 @@ def decode_hrrr_massden(data: bytes) -> HrrrField:
             int(eccodes.codes_get(gid, key)) if eccodes.codes_is_defined(gid, key) else -1
             for key in ("discipline", "parameterCategory", "parameterNumber")
         )
-        if short_name not in {"MASSDEN", "MASS DEN"} and parameter != (0, 20, 0):
+        if short_name not in {"MASSDEN", "MASS DEN"} and not (short_name == "UNKNOWN" and parameter == (0, 20, 0)):
             raise ValueError(f"unexpected HRRR variable {short_name}")
         if int(level) != 8 or type_of_level != "heightAboveGround":
             raise ValueError(f"unexpected HRRR level {level} {type_of_level}")

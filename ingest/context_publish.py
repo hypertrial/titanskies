@@ -13,7 +13,7 @@ from PIL import Image
 
 from ingest.auth import redact
 from ingest.local_store import FrameStore
-from ingest.context_contracts import CONTEXT_JSON_BUDGET_BYTES, CONTEXT_RASTER_BUDGET_BYTES, MONITOR_JSON_BUDGET_BYTES, iso_utc
+from ingest.context_contracts import CONTEXT_JSON_BUDGET_BYTES, CONTEXT_RASTER_BUDGET_BYTES, MONITOR_JSON_BUDGET_BYTES, iso_utc, validate_context_manifest
 from ingest.http_pool import map_bounded
 from ingest.perf import current_asset_memo, current_budget, current_metrics
 
@@ -23,15 +23,25 @@ CONTEXT_STATUS_PATH = "context/status.json"
 CONTEXT_LOCK_PATH = "locks/context.json"
 CONTEXT_GC_INVENTORY = "context/gc-inventory.json"
 _ASSET_MEMO_LOCK = threading.Lock()
-_VOLATILE_DEMO_METRICS = {"elapsedSeconds", "cpuSeconds", "phaseSeconds", "sourceSeconds", "providerPhaseSeconds", "forecastWaveSeconds"}
+_VOLATILE_DEMO_METRICS = {
+    "elapsedSeconds",
+    "cpuSeconds",
+    "deadlineSkips",
+    "forecastWaveSeconds",
+    "phaseSeconds",
+    "providerPhaseSeconds",
+    "sourceSeconds",
+    "splitRecommended",
+}
 
 
 def load_json(store: FrameStore, pathname: str) -> dict[str, Any] | None:
-    raw = store.get_text(pathname)
-    if not raw:
+    try:
+        raw = store.get_bytes(pathname, max_bytes=CONTEXT_JSON_BUDGET_BYTES)
+        value = json.loads(raw.decode("utf-8")) if raw else None
+        return value if isinstance(value, dict) else None
+    except (json.JSONDecodeError, RuntimeError, UnicodeError, ValueError):
         return None
-    value = json.loads(raw)
-    return value if isinstance(value, dict) else None
 
 
 def context_status_metrics(manifest: dict[str, Any], metrics: dict[str, Any]) -> dict[str, Any]:
@@ -99,13 +109,22 @@ def _put_asset(store: FrameStore, name: str, data: bytes, content_type: str, bud
         cached = memo.get(pathname)
     if cached:
         return cached
-    url = store.put_bytes(
-        pathname,
-        data,
-        content_type,
-        cache_seconds=60 * 60 * 24 * 30,
-        overwrite=False,
-    )
+    overwrite = False
+    try:
+        existing = store.get_bytes(pathname, max_bytes=limit)
+    except (RuntimeError, ValueError):
+        existing = None
+        overwrite = True
+    if existing == data:
+        url = store.url_for(pathname)
+    else:
+        url = store.put_bytes(
+            pathname,
+            data,
+            content_type,
+            cache_seconds=60 * 60 * 24 * 30,
+            overwrite=overwrite or existing is not None,
+        )
     with _ASSET_MEMO_LOCK:
         memo[pathname] = url
     return url
@@ -139,10 +158,12 @@ def _asset_path_from_url(url: str) -> str | None:
     return path if _ASSET_PATH.fullmatch(path) else None
 
 
-def _seed_asset_memo(previous: dict[str, Any] | None) -> None:
+def _seed_asset_memo(store: FrameStore, previous: dict[str, Any] | None) -> bool:
     memo = current_asset_memo()
+    valid = True
 
     def collect(value: Any) -> None:
+        nonlocal valid
         if isinstance(value, dict):
             for nested in value.values():
                 collect(nested)
@@ -152,9 +173,20 @@ def _seed_asset_memo(previous: dict[str, Any] | None) -> None:
         elif isinstance(value, str):
             path = _asset_path_from_url(value)
             if path:
-                memo[path] = value
+                try:
+                    data = store.get_bytes(path, max_bytes=max(CONTEXT_RASTER_BUDGET_BYTES, MONITOR_JSON_BUDGET_BYTES))
+                except (OSError, RuntimeError, ValueError):
+                    data = None
+                digest = path.split("/", 3)[2]
+                if data is None or hashlib.sha256(data).hexdigest()[:20] != digest:
+                    valid = False
+                else:
+                    memo[path] = value
 
     collect(previous)
+    if not valid:
+        memo.clear()
+    return valid
 
 
 def _previous_context(store: FrameStore) -> tuple[dict[str, Any] | None, str | None]:
@@ -162,9 +194,18 @@ def _previous_context(store: FrameStore) -> tuple[dict[str, Any] | None, str | N
     if not pointer:
         return None, None
     path = pointer.get("manifestPath")
-    return (load_json(store, path), path) if isinstance(path, str) else (None, None)
+    if not isinstance(path, str) or not _MANIFEST_PATH.fullmatch(path):
+        return None, None
+    try:
+        previous = load_json(store, path)
+        if previous is not None:
+            validate_context_manifest(previous)
+        return previous, path
+    except ValueError:
+        return None, path
 
 _ASSET_PATH = re.compile(r"^context/assets/[0-9a-f]{20}/[A-Za-z0-9._-]+$")
+_MANIFEST_PATH = re.compile(r"^context/manifests/[0-9a-f]{20}\.json$")
 
 def _publish_source_frames(store: FrameStore, frames: list[dict[str, Any]], name: str, encode_png: bool) -> list[dict[str, Any]]:
     published = []

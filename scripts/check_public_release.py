@@ -19,6 +19,7 @@ RETIRED_HOSTS = {
     "www.star.nesdis.noaa.gov",
 }
 URL = re.compile(r"https://[^\"'\s)]+")
+ACTION = re.compile(r"^\s*(?:-\s*)?uses:\s*([^\s#]+)", re.MULTILINE)
 
 
 def fail(message: str) -> None:
@@ -84,4 +85,14 @@ for path in ROOT.rglob("*"):
 
 if (ROOT / ".pad").exists() or (ROOT / ".pad.toml").exists():
     fail("private Pad metadata is present")
+for workflow in (ROOT / ".github/workflows").glob("*.y*ml"):
+    for action in ACTION.findall(workflow.read_text(encoding="utf-8")):
+        if not re.fullmatch(r"[^@]+@[0-9a-f]{40}", action):
+            fail(f"workflow action is not pinned to a commit: {action}")
+docker_lines = (ROOT / "Dockerfile").read_text(encoding="utf-8").splitlines()
+if not docker_lines or not re.fullmatch(r"# syntax=[^@]+@sha256:[0-9a-f]{64}", docker_lines[0]):
+    fail("Dockerfile syntax frontend is not pinned to a digest")
+for line in docker_lines:
+    if line.startswith("FROM ") and "@sha256:" not in line:
+        fail(f"container base is not pinned to a digest: {line}")
 print("public-release checks passed")

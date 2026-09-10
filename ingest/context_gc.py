@@ -1,6 +1,7 @@
 """Bounded, fail-closed discovery of public objects abandoned by failed runs."""
 from __future__ import annotations
 
+import json
 import logging
 import math
 import re
@@ -108,7 +109,11 @@ def reconcile_orphans(
     try:
         with storage_operation_budget(seconds):
             now = _now().timestamp()
-            state = _state(store.get_authoritative_json(STATE_PATH), now)
+            try:
+                state = _state(store.get_authoritative_json(STATE_PATH), now)
+            except (json.JSONDecodeError, RuntimeError, TypeError, UnicodeError, ValueError):
+                state = _state(None, now)
+                store.put_json(STATE_PATH, state, cache_seconds=0, overwrite=True)
             protected = _protected(manifest, pointer["manifestPath"], previous, previous_path)
             pending = state["pending"]
             for path in list(pending):

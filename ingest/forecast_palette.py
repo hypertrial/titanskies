@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import zlib
 import json
 from pathlib import Path
 from typing import Any
@@ -171,7 +172,13 @@ def encode_indexes(indexes: np.ndarray, lut: list[tuple[int, int, int, int]] = _
     image.putpalette(bytes(palette_bytes))
     image.info["transparency"] = bytes(color[3] for color in lut)
     output = io.BytesIO()
-    image.save(output, format="PNG", optimize=False, compress_level=6)
+    image.save(
+        output,
+        format="PNG",
+        optimize=False,
+        compress_level=6,
+        compress_type=zlib.Z_RLE,
+    )
     return output.getvalue()
 
 
@@ -238,7 +245,13 @@ def encode_mask_png(codes: np.ndarray, *, legacy: bool = False) -> bytes:
     image.putpalette(bytes(palette_bytes))
     image.info["transparency"] = bytes(mask_rgba(code)[3] for code in MASK_LABELS)
     output = io.BytesIO()
-    image.save(output, format="PNG", optimize=False, compress_level=3)
+    image.save(
+        output,
+        format="PNG",
+        optimize=False,
+        compress_level=3,
+        compress_type=zlib.Z_RLE,
+    )
     return output.getvalue()
 
 

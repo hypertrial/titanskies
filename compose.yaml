@@ -15,7 +15,13 @@ x-service: &service
     TITANSKIES_DATA_DIR: /var/lib/titanskies
     TITANSKIES_CACHE_DIR: /var/cache/titanskies
     CONTEXT_WATCH_SECONDS: ${CONTEXT_WATCH_SECONDS:-900}
-    AIRNOW_API_KEY: ${AIRNOW_API_KEY:-}
+    FRAME_RETENTION_HOURS: ${FRAME_RETENTION_HOURS:-48}
+    INGEST_BUDGET_SECONDS: ${INGEST_BUDGET_SECONDS:-300}
+    INGEST_HTTP_CONCURRENCY: ${INGEST_HTTP_CONCURRENCY:-12}
+    CONTEXT_SOURCE_CONCURRENCY: ${CONTEXT_SOURCE_CONCURRENCY:-3}
+    HRRR_CONCURRENCY: ${HRRR_CONCURRENCY:-4}
+    FIREWORK_CONCURRENCY: ${FIREWORK_CONCURRENCY:-6}
+    SINAICA_CONCURRENCY: ${SINAICA_CONCURRENCY:-4}
 
 services:
   web:
@@ -26,7 +32,9 @@ services:
       TITANSKIES_BIND_ADDR: 0.0.0.0
       TITANSKIES_PORT: 8080
     ports:
-      - "127.0.0.1:${TITANSKIES_PORT:-8080}:8080"
+      - target: 8080
+        published: ${TITANSKIES_PORT:-8080}
+        host_ip: ${TITANSKIES_BIND_ADDR:-127.0.0.1}
     volumes:
       - data:/var/lib/titanskies:ro
     healthcheck:
@@ -39,7 +47,9 @@ services:
   ingest:
     <<: *service
     command: [ingest]
-    environment: *environment
+    environment:
+      <<: *environment
+      AIRNOW_API_KEY: ${AIRNOW_API_KEY:-}
     volumes:
       - data:/var/lib/titanskies
       - cache:/var/cache/titanskies

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from unittest.mock import Mock, patch
 
+import pytest
+
 from ingest.http import GLOBAL_HTTP_LIMIT, HTTP_LIMIT_MAX, HttpFetchError, configure_http_limit, fetch, session_get
 from ingest.http_pool import map_bounded, map_isolated, map_isolated_batches
 from ingest.perf import ingest_run
@@ -243,6 +245,46 @@ def test_expired_acquisition_budget_never_starts_request() -> None:
     request.assert_not_called()
 
 
+def test_streaming_response_stops_when_acquisition_budget_expires() -> None:
+    response = Mock()
+    response.__enter__ = Mock(return_value=response)
+    response.__exit__ = Mock(return_value=False)
+    response.status_code = 200
+    response.headers = {}
+    response.url = "https://example.test/data"
+    session = Mock()
+    session.request.return_value = response
+    with ingest_run(budget_seconds=10) as (_metrics, budget):
+        def chunks():
+            yield b"first"
+            budget.started -= 20
+            yield b"second"
+        response.iter_content = Mock(return_value=chunks())
+        with patch("ingest.http._session", return_value=session), pytest.raises(HttpFetchError, match="deadline"):
+            fetch("https://example.test/data", hosts=frozenset({"example.test"}), retries=0)
+
+
+def test_stream_read_timeout_cannot_consume_the_finalization_reserve() -> None:
+    response = Mock()
+    response.__enter__ = Mock(return_value=response)
+    response.__exit__ = Mock(return_value=False)
+    response.status_code = 200
+    response.headers = {}
+    response.url = "https://example.test/data"
+    session = Mock()
+    session.request.return_value = response
+    with ingest_run(budget_seconds=60) as (_metrics, budget):
+        def chunks():
+            _connect_timeout, read_timeout = session.request.call_args.kwargs["timeout"]
+            budget.started -= budget.acquisition_remaining() + read_timeout
+            yield b"late"
+
+        response.iter_content = Mock(return_value=chunks())
+        with patch("ingest.http._session", return_value=session), pytest.raises(HttpFetchError, match="deadline"):
+            fetch("https://example.test/data", hosts=frozenset({"example.test"}), timeout=300, retries=0)
+        assert budget.remaining() > 0
+
+
 def test_request_does_not_wait_past_deadline_for_a_concurrency_slot() -> None:
     semaphore = Mock()
     semaphore.acquire.return_value = False
@@ -269,7 +311,7 @@ def test_request_timeout_is_reclamped_after_waiting_for_a_slot() -> None:
     session.request.return_value = response
     with (
         patch("ingest.http._session", return_value=session),
-        patch("ingest.http.bounded_timeout", side_effect=[30.0, 20.0, 10.0]),
+        patch("ingest.http.bounded_timeout", side_effect=[30.0, 20.0, 10.0, 10.0, 10.0]),
     ):
         assert fetch("https://example.test/data", hosts=frozenset({"example.test"}), retries=0) == b"ok"
     assert session.request.call_args.kwargs["timeout"] == 10.0
