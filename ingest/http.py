@@ -17,6 +17,17 @@ DEFAULT_MAX_BYTES = 5 * 1024 * 1024
 USER_AGENT = "TitanSkies/0.1.0 (+https://github.com/hypertrial/titanskies)"
 GLOBAL_HTTP_LIMIT = 12
 HTTP_LIMIT_MAX = 16
+REGISTERED_ENDPOINT_HOSTS = frozenset({
+    "api.weather.gc.ca",
+    "cwfis.cfs.nrcan.gc.ca",
+    "geo.weather.gc.ca",
+    "geoserver.cwfif.nrcan.gc.ca",
+    "nomads.ncep.noaa.gov",
+    "services3.arcgis.com",
+    "sinaica.inecc.gob.mx",
+    "www.airnowapi.org",
+    "www.env.gov.bc.ca",
+})
 
 _LOCAL = threading.local()
 _POOL_SIZE = GLOBAL_HTTP_LIMIT
@@ -125,6 +136,8 @@ class _Slot:
 def allowed_host(url: str, hosts: frozenset[str]) -> str:
     parsed = urlparse(url)
     hostname = (parsed.hostname or "").lower()
+    if not hosts or not hosts.issubset(REGISTERED_ENDPOINT_HOSTS):
+        raise ValueError("blocked unregistered provider allowlist")
     if parsed.scheme != "https" or hostname not in hosts:
         raise ValueError(f"blocked host {hostname or url}")
     return hostname

@@ -145,25 +145,34 @@ def test_session_get_uses_https_allowlist_and_response_limit() -> None:
     response.__exit__ = Mock(return_value=False)
     response.status_code = 200
     response.headers = {}
-    response.url = "https://example.test/data"
+    response.url = "https://api.weather.gc.ca/data"
     response.iter_content = Mock(return_value=iter([b"1234", b"5678"]))
     session = Mock()
     session.request.return_value = response
 
     with patch("ingest.http._session", return_value=session):
         try:
-            session_get("https://example.test/data", hosts=frozenset({"example.test"}), max_bytes=7)
+            session_get("https://api.weather.gc.ca/data", hosts=frozenset({"api.weather.gc.ca"}), max_bytes=7)
         except RuntimeError as exc:
             assert "exceeds 7 bytes" in str(exc)
         else:
             raise AssertionError("oversized response was accepted")
 
     try:
-        session_get("http://example.test/data", hosts=frozenset({"example.test"}))
+        session_get("http://api.weather.gc.ca/data", hosts=frozenset({"api.weather.gc.ca"}))
     except ValueError as exc:
         assert "blocked host" in str(exc)
     else:
         raise AssertionError("insecure provider URL was accepted")
+
+
+def test_http_rejects_hosts_outside_the_source_registry() -> None:
+    for url, hosts in (
+        ("https://www.airnow.gov/data", frozenset({"www.airnow.gov"})),
+        ("https://" + "example.invalid/data", frozenset({"example.invalid"})),
+    ):
+        with pytest.raises(ValueError, match="unregistered provider allowlist"):
+            fetch(url, hosts=hosts, retries=0)
 
 
 def test_not_modified_without_location_is_not_a_provider_outage() -> None:
@@ -251,7 +260,7 @@ def test_streaming_response_stops_when_acquisition_budget_expires() -> None:
     response.__exit__ = Mock(return_value=False)
     response.status_code = 200
     response.headers = {}
-    response.url = "https://example.test/data"
+    response.url = "https://api.weather.gc.ca/data"
     session = Mock()
     session.request.return_value = response
     with ingest_run(budget_seconds=10) as (_metrics, budget):
@@ -261,7 +270,7 @@ def test_streaming_response_stops_when_acquisition_budget_expires() -> None:
             yield b"second"
         response.iter_content = Mock(return_value=chunks())
         with patch("ingest.http._session", return_value=session), pytest.raises(HttpFetchError, match="deadline"):
-            fetch("https://example.test/data", hosts=frozenset({"example.test"}), retries=0)
+            fetch("https://api.weather.gc.ca/data", hosts=frozenset({"api.weather.gc.ca"}), retries=0)
 
 
 def test_stream_read_timeout_cannot_consume_the_finalization_reserve() -> None:
@@ -270,7 +279,7 @@ def test_stream_read_timeout_cannot_consume_the_finalization_reserve() -> None:
     response.__exit__ = Mock(return_value=False)
     response.status_code = 200
     response.headers = {}
-    response.url = "https://example.test/data"
+    response.url = "https://api.weather.gc.ca/data"
     session = Mock()
     session.request.return_value = response
     with ingest_run(budget_seconds=60) as (_metrics, budget):
@@ -281,7 +290,7 @@ def test_stream_read_timeout_cannot_consume_the_finalization_reserve() -> None:
 
         response.iter_content = Mock(return_value=chunks())
         with patch("ingest.http._session", return_value=session), pytest.raises(HttpFetchError, match="deadline"):
-            fetch("https://example.test/data", hosts=frozenset({"example.test"}), timeout=300, retries=0)
+            fetch("https://api.weather.gc.ca/data", hosts=frozenset({"api.weather.gc.ca"}), timeout=300, retries=0)
         assert budget.remaining() > 0
 
 
@@ -290,7 +299,7 @@ def test_request_does_not_wait_past_deadline_for_a_concurrency_slot() -> None:
     semaphore.acquire.return_value = False
     with patch("ingest.http._GLOBAL_SEMAPHORE", semaphore), patch("ingest.http._session") as session:
         try:
-            fetch("https://example.test/data", hosts=frozenset({"example.test"}), retries=0)
+            fetch("https://api.weather.gc.ca/data", hosts=frozenset({"api.weather.gc.ca"}), retries=0)
         except HttpFetchError as exc:
             assert "deadline" in str(exc)
         else:
@@ -305,7 +314,7 @@ def test_request_timeout_is_reclamped_after_waiting_for_a_slot() -> None:
     response.__exit__ = Mock(return_value=False)
     response.status_code = 200
     response.headers = {}
-    response.url = "https://example.test/data"
+    response.url = "https://api.weather.gc.ca/data"
     response.iter_content = Mock(return_value=iter([b"ok"]))
     session = Mock()
     session.request.return_value = response
@@ -313,7 +322,7 @@ def test_request_timeout_is_reclamped_after_waiting_for_a_slot() -> None:
         patch("ingest.http._session", return_value=session),
         patch("ingest.http.bounded_timeout", side_effect=[30.0, 20.0, 10.0, 10.0, 10.0]),
     ):
-        assert fetch("https://example.test/data", hosts=frozenset({"example.test"}), retries=0) == b"ok"
+        assert fetch("https://api.weather.gc.ca/data", hosts=frozenset({"api.weather.gc.ca"}), retries=0) == b"ok"
     assert session.request.call_args.kwargs["timeout"] == 10.0
 
 

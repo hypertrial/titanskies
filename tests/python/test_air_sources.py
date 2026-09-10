@@ -562,11 +562,17 @@ def test_sinaica_discovers_stations_and_rejects_unknown_timezone() -> None:
 
 def test_sinaica_station_discovery_deduplicates_repeated_options() -> None:
     html = (
-        '<select><option value="102">Guadalajara</option>'
+        '<select id="hours"><option value="23">23:00</option></select>'
+        '<select ID="Estacion"><option value="102">Guadalajara</option>'
         '<option value="103"></option><option value="102">Guadalajara duplicate</option>'
-        '<option value="103">Monterrey</option></select>'
+        '<option value="103">Monterrey</option></select><option value="104">Not a station</option>'
     )
     assert parse_sinaica_stations(html) == [("102", "Guadalajara"), ("103", "Monterrey")]
+
+
+def test_sinaica_station_discovery_fails_closed_without_authoritative_select() -> None:
+    html = '<select id="hours"><option value="23">23:00</option></select><option value="102">Not a station</option>'
+    assert parse_sinaica_stations(html) == []
 
 
 def test_sinaica_extracts_embedded_json_without_executing_javascript() -> None:

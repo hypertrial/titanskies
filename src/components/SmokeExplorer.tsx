@@ -23,6 +23,7 @@ import {
 import {
   closeContextImage,
   contextPointerUrl,
+  fetchJson,
   loadContextImage,
   playbackPositionAfterContextRefresh,
 } from "@/data/contextClient";
@@ -83,6 +84,7 @@ import { useForecastPlaybackModel } from "./explorer/useForecastPlaybackModel";
 const SmokeScene = dynamic(() => import("./scene/SmokeScene").then((mod) => mod.SmokeScene), { ssr: false });
 type ImageSource = ImageBitmap | HTMLImageElement;
 const LOOP_FADE_MS = 350;
+const EARTH_TEXTURE_URL = "/geo/earth-dark-v2.webp";
 const PLAYBACK_SPEEDS: PlaybackSpeed[] = [0.25, 1, 3];
 const playbackSpeedLabel = (speed: PlaybackSpeed) => speed === 0.25 ? "¼×" : `${speed}×`;
 
@@ -111,7 +113,7 @@ function formatLonLat(lat: number, lon: number): string {
   return `${Math.abs(lat).toFixed(2)}°${lat >= 0 ? "N" : "S"}, ${Math.abs(lon).toFixed(2)}°${lon >= 0 ? "E" : "W"}`;
 }
 
-function useImages(urls: string[], onError: (message: string | null) => void, retryKey: number): Record<string, ImageSource> {
+function useImages(urls: string[], onError: (message: string | null) => void, retryKey: number, preferImageElement = false): Record<string, ImageSource> {
   const cache = useRef(new Map<string, ImageSource>());
   const previousRetryKey = useRef(retryKey);
   const [images, setImages] = useState<Record<string, ImageSource>>({});
@@ -134,7 +136,7 @@ function useImages(urls: string[], onError: (message: string | null) => void, re
     })));
     void Promise.all(desired.map(async (url) => {
       if (cache.current.has(url)) return;
-      const image = await loadContextImage(url, controller.signal);
+      const image = await loadContextImage(url, controller.signal, { preferImageElement });
       if (cancelled) closeContextImage(image);
       else {
         cache.current.set(url, image);
@@ -146,7 +148,7 @@ function useImages(urls: string[], onError: (message: string | null) => void, re
     return () => { cancelled = true; controller.abort(); };
   // signature is a stable representation of the intended resident image window.
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [retryKey, signature]);
+  }, [preferImageElement, retryKey, signature]);
   useEffect(() => () => { cache.current.forEach(closeContextImage); cache.current.clear(); }, []);
   return images;
 }
@@ -333,6 +335,8 @@ export function SmokeExplorer() {
   const [sceneReady, setSceneReady] = useState(false);
   const [forecastRasterReady, setForecastRasterReady] = useState(false);
   const [sceneError, setSceneError] = useState<string | null>(null);
+  const [geoError, setGeoError] = useState<string | null>(null);
+  const [earthError, setEarthError] = useState<string | null>(null);
   const handleSceneReady = useCallback(() => setSceneReady(true), []);
   const forecastPositionRef = useRef(0);
   const forecastEntriesRef = useRef<Array<{ scanId: string; observationStart: string; manifestUrl: string }>>([]);
@@ -477,6 +481,7 @@ export function SmokeExplorer() {
     }
     clearLocation();
     dispatchContextPanel({ type: "close-selection" });
+    setTopConditionsReferenceTime(manifest.mode === "demo" ? Date.parse(manifest.generatedAt) : now);
     commitPlaybackPosition(playbackPositionAfterContextRefresh({
       previous: reason === "load" ? null : previous,
       next: manifest,
@@ -507,19 +512,20 @@ export function SmokeExplorer() {
     onChangedPublication: handleChangedPublication,
     onSamePublication: handleSamePublication,
   });
+  const earthImages = useImages([EARTH_TEXTURE_URL], (error) => setEarthError(error ? "Unable to load the globe texture." : null), contextRetry, true);
+  const earthImage = earthImages[EARTH_TEXTURE_URL] ?? null;
 
   useEffect(() => {
     let cancelled = false;
     setGeo(null);
-    fetch("/geo/north-america-v3.json")
-      .then((response) => { if (!response.ok) throw new Error("Failed to load geographic context"); return response.json() as Promise<GeoContext>; })
+    fetchJson<GeoContext>("/geo/north-america-v3.json")
       .then((payload) => {
         if (cancelled) return;
         if (payload.version !== 3 || !Array.isArray(payload.cities) || !Array.isArray(payload.mapLabels)) throw new Error("Unsupported geographic context");
         setGeo(payload);
-        setSceneError(null);
+        setGeoError(null);
       })
-      .catch(() => { if (!cancelled) setSceneError("Unable to load North American political boundaries."); });
+      .catch(() => { if (!cancelled) setGeoError("Unable to load North American political boundaries."); });
     return () => { cancelled = true; };
   }, [contextRetry]);
 
@@ -934,16 +940,17 @@ export function SmokeExplorer() {
   const layerError = assetError ?? imageError ?? detailImageError;
   const visibleLayerError = layerError ?? (view === "air" ? airError : null) ?? (activeLayers.incidents ? incidentError : null);
   const publicError = contextError ?? unavailable ?? (!viewReady ? (view === "air" ? airError : layerError) : null);
-  const displayError = publicError ?? sceneError;
+  const criticalSceneError = geoError ?? earthError ?? sceneError;
+  const displayError = publicError ?? criticalSceneError;
   useEffect(() => {
     if (!networkOnline) {
       wasOfflineRef.current = true;
       return;
     }
-    if (!wasOfflineRef.current || !(publicError || sceneError)) return;
+    if (!wasOfflineRef.current || !(publicError || criticalSceneError)) return;
     wasOfflineRef.current = false;
     retryContext();
-  }, [networkOnline, publicError, retryContext, sceneError]);
+  }, [criticalSceneError, networkOnline, publicError, retryContext]);
   const publicationWarning = context?.mode !== "live" ? null
     : contextHealth?.status === "unhealthy" ? "Live data has not refreshed on schedule. Showing the last complete publication."
       : contextHealth?.status === "degraded" && contextHealth.publication !== "fresh" ? "The latest scheduled update did not publish fresh data. Showing the last complete publication."
@@ -1367,7 +1374,7 @@ export function SmokeExplorer() {
     <h1 className="sr-only">North America smoke and air-quality explorer</h1>
     <p id="globe-help" className="sr-only">{globeHelp}</p>
     <div id="view-panel" className="scene" role="tabpanel" aria-labelledby={`view-tab-${view}`} aria-describedby="globe-help">
-      <SmokeScene layers={activeLayers} geo={geo} mobile={mobile} compactLabels={shortLandscape} monitors={visibleMonitors} selectedMonitorIds={selectedAirReading ? [selectedAirReading.monitor.id] : selection?.kind === "air-monitor" ? [selection.monitor.id] : selection?.kind === "air-cluster" ? selection.monitors.map((monitor) => monitor.id) : []} incidents={incidents} selectedIncidentIds={selection?.kind === "incident" ? [selection.incident.id] : selection?.kind === "incident-cluster" ? selection.incidents.map((incident) => incident.id) : []} contextImageA={contextSurfaceA} contextImageB={contextSurfaceB} legacyForecast={legacyForecast} residentRasters={residentRasters} detailImages={detailImages} detailTileIds={detailTileIds} detailGrid={activeDetailGrid} renderedFromIndex={forecastPlayback.fromIndex} renderedToIndex={surfaceToIndex} contextMixRef={contextMixRef} smokeOpacityRef={smokeOpacityRef} renderRequestRef={sceneRenderRequestRef} renderMix={contextMixRef.current} renderOpacity={smokeOpacityRef.current} playing={animationActive} detailPlaybackMode={detailPlaybackMode} reducedMotion={reducedMotion} resetSignal={resetSignal} focusLocation={focusLocation} inspectLocation={inspectPoint} inspectLabel={inspectLabel} onReady={handleSceneReady} onLayerReady={setForecastRasterReady} onDetailsHidden={finishDetailPreparation} onPairCommitted={handlePairCommitted} onDetailTiles={handleDetailTiles} sceneRetryKey={contextRetry} onSceneError={() => setSceneError("Unable to load the globe texture.")} onSelect={(next) => { if (!next) { closeContextPanel(); return; } setInspectPoint(null); selectionRequestRef.current += 1; pauseForInteraction(); setSelectedCity(null); setSelectedFromRanking(false); setFocusLocation(null); if (view === "forecast") leaveLive(); setSelection(next); openContextPanel("selection", document.querySelector<HTMLElement>("[data-map-keyboard]")); }} onMapClick={selectMap} />
+      <SmokeScene layers={activeLayers} geo={geo} earthImage={earthImage} mobile={mobile} compactLabels={shortLandscape} monitors={visibleMonitors} selectedMonitorIds={selectedAirReading ? [selectedAirReading.monitor.id] : selection?.kind === "air-monitor" ? [selection.monitor.id] : selection?.kind === "air-cluster" ? selection.monitors.map((monitor) => monitor.id) : []} incidents={incidents} selectedIncidentIds={selection?.kind === "incident" ? [selection.incident.id] : selection?.kind === "incident-cluster" ? selection.incidents.map((incident) => incident.id) : []} contextImageA={contextSurfaceA} contextImageB={contextSurfaceB} legacyForecast={legacyForecast} residentRasters={residentRasters} detailImages={detailImages} detailTileIds={detailTileIds} detailGrid={activeDetailGrid} renderedFromIndex={forecastPlayback.fromIndex} renderedToIndex={surfaceToIndex} contextMixRef={contextMixRef} smokeOpacityRef={smokeOpacityRef} renderRequestRef={sceneRenderRequestRef} renderMix={contextMixRef.current} renderOpacity={smokeOpacityRef.current} playing={animationActive} detailPlaybackMode={detailPlaybackMode} reducedMotion={reducedMotion} resetSignal={resetSignal} focusLocation={focusLocation} inspectLocation={inspectPoint} inspectLabel={inspectLabel} onReady={handleSceneReady} onLayerReady={setForecastRasterReady} onDetailsHidden={finishDetailPreparation} onPairCommitted={handlePairCommitted} onDetailTiles={handleDetailTiles} sceneRetryKey={contextRetry} onSceneError={() => setSceneError("Unable to load the globe texture.")} onSelect={(next) => { if (!next) { closeContextPanel(); return; } setInspectPoint(null); selectionRequestRef.current += 1; pauseForInteraction(); setSelectedCity(null); setSelectedFromRanking(false); setFocusLocation(null); if (view === "forecast") leaveLive(); setSelection(next); openContextPanel("selection", document.querySelector<HTMLElement>("[data-map-keyboard]")); }} onMapClick={selectMap} />
     </div>
     <div className="explorer-chrome">
       <header className="top-toolbar">
@@ -1392,7 +1399,7 @@ export function SmokeExplorer() {
       {contextPanel && drawerContent ? <div id="context-drawer" className={contextPanel === "selection" ? "selection-drawer" : contextPanel === "mobile-actions" ? "mobile-actions-drawer" : undefined}><ContextDrawer title={drawerTitle} eyebrow={drawerEyebrow} onClose={closeContextPanel}>{drawerContent}</ContextDrawer></div> : null}
     </div>
     {!viewReady && !publicError ? <div className="loading-state" role="status" data-testid="loading-state"><span aria-hidden="true" />{context ? `Preparing ${view} view…` : "Loading trusted data sources…"}</div> : null}
-    {displayError ? <div className="error-state panel" role="alert" data-testid="error-state"><strong>This view couldn’t load.</strong><span>{networkOnline ? userFacingLoadError(displayError) : "TitanSkies needs a network connection to load current forecasts and observations."}</span><button type="button" onClick={() => { setAssetError(null); setImageError(null); setDetailImageError(null); clearIncidentError(); setSceneError(null); setSceneReady(false); retryContext(); }}>Retry</button></div> : null}
+    {displayError ? <div className="error-state panel" role="alert" data-testid="error-state"><strong>This view couldn’t load.</strong><span>{networkOnline ? userFacingLoadError(displayError) : "TitanSkies needs a network connection to load current forecasts and observations."}</span><button type="button" onClick={() => { setAssetError(null); setImageError(null); setDetailImageError(null); clearIncidentError(); setSceneError(null); setGeoError(null); setEarthError(null); setSceneReady(false); retryContext(); }}>Retry</button></div> : null}
     {warningMessages.length ? <div className="stale-banner" role={contextHealth?.status === "unhealthy" ? "alert" : "status"} data-testid="source-warning">{warningMessages.join(" · ")} {publicationWarning ? <button className="text-button" type="button" onClick={retryHealth}>Check again</button> : visibleLayerError && viewReady ? <button className="text-button" type="button" onClick={() => { setAssetError(null); setImageError(null); setDetailImageError(null); clearIncidentError(); retryContext(); }}>Retry layers</button> : null}</div> : null}
     <dialog ref={methodologyDialog} className="methodology-dialog" aria-labelledby="methodology-title" onCancel={(event) => { event.preventDefault(); methodologyDialog.current?.close(); }} onClose={() => { setMethodologyOpen(false); methodologyReturnFocus.current?.focus(); methodologyReturnFocus.current = null; }}><div className="dialog-heading"><div><span className="eyebrow">About the data</span><h2 id="methodology-title">What the forecast and air-quality views can tell you</h2></div><button className="icon-button quiet" type="button" onClick={() => methodologyDialog.current?.close()} aria-label="Close methodology"><Icon name="close" /></button></div><div className="methodology-content"><p>{PUBLIC_DATA_WARNING}</p><dl><div><dt>Forecast versus observed air quality</dt><dd>NOAA HRRR-Smoke and ECCC FireWork are model forecasts. This publication provides one continuous {horizonHours}-hour outlook. Air-quality markers are preliminary official PM2.5 observations at exact station locations. Neither product attributes pollution to a wildfire.</dd></div><div><dt>How the smoke outlook is built</dt><dd>TitanSkies starts with ECCC FireWork Canadian guidance. Where both models are valid, the numeric formula is FireWork + edgeWeight × max(HRRR − FireWork, 0). The U.S. enhancement fades in over 200 km from HRRR’s edge. Concentrations are combined before colorization. This is not an average or a calibrated ensemble.</dd></div><div><dt>How PM2.5 readings are prepared</dt><dd>AirNow provides provider-reported EPA PM2.5 AQI. TitanSkies calculates EPA NowCast AQI from official B.C. ENV and SINAICA hourly PM2.5 readings so the displayed station markers use a comparable EPA scale. AQHI remains a separate Canadian health-risk scale. Each marker remains an individual observation.</dd></div><div><dt>Map geography</dt><dd>Natural Earth supplies bundled city and boundary data. Landmark coordinates and stable IDs come from Wikidata structured data under CC0. Map generation is pinned and makes no production geocoding requests.</dd></div><div><dt>Reported wildfires</dt><dd>US WFIGS and Canadian CWFIS incidents are agency reports. An incident does not prove the origin of a forecast plume or observed pollution.</dd></div><div><dt>Privacy</dt><dd>TitanSkies is self-hosted, includes no analytics, and sends searches and selected locations nowhere.</dd></div></dl><div className="source-links"><a href="https://www.airnow.gov/" target="_blank" rel="noreferrer">EPA AirNow</a><a href="https://rapidrefresh.noaa.gov/hrrr/HRRRsmoke/" target="_blank" rel="noreferrer">NOAA HRRR-Smoke</a><a href="https://weather.gc.ca/firework/" target="_blank" rel="noreferrer">ECCC FireWork</a><a href="https://www2.gov.bc.ca/gov/content/environment/air-land-water/air/air-quality/current-air-quality-data" target="_blank" rel="noreferrer">B.C. ENV</a><a href="https://sinaica.inecc.gob.mx/" target="_blank" rel="noreferrer">INECC/SINAICA</a><a href="https://weather.gc.ca/airquality/pages/index_e.html" target="_blank" rel="noreferrer">ECCC AQHI</a><a href="https://data-nifc.opendata.arcgis.com/" target="_blank" rel="noreferrer">NIFC WFIGS</a><a href="https://cwfis.cfs.nrcan.gc.ca/" target="_blank" rel="noreferrer">CWFIS</a><a href="https://www.naturalearthdata.com/about/terms-of-use/" target="_blank" rel="noreferrer">Natural Earth terms</a><a href="https://www.wikidata.org/wiki/Wikidata:Copyright" target="_blank" rel="noreferrer">Wikidata CC0</a></div></div></dialog>
   </main>;

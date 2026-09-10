@@ -4,7 +4,7 @@ set -eu
 fail() { printf 'TitanSkies: %s\n' "$*" >&2; exit 1; }
 root=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 command -v node >/dev/null 2>&1 || fail "Node.js 22 is required. On Omarchy, use mise: mise use -g node@22."
-version=$(node -p "require('$root/package.json').version")
+version=$(node -p 'require(process.argv[1]).version' "$root/package.json")
 node -e 'process.exit(/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:[-+][0-9A-Za-z.-]+)?$/.test(process.argv[1]) ? 0 : 1)' "$version" \
   || fail "package version is not a safe semantic version"
 config_home=${XDG_CONFIG_HOME:-"$HOME/.config"}
@@ -89,19 +89,6 @@ case "$configured_port" in ''|*[!0-9]*) fail "TITANSKIES_PORT must be an integer
 [ "$configured_port" -ge 1 ] 2>/dev/null && [ "$configured_port" -le 65535 ] 2>/dev/null || fail "TITANSKIES_PORT must be an integer from 1 to 65535"
 app_url=http://$browser_host:$configured_port
 
-staging=$install_dir/releases/.${version}.new
-rm -rf "$staging"
-mkdir -p "$staging"
-tar -C "$root" \
-  --exclude=.git --exclude='.next*' --exclude=node_modules --exclude=.venv --exclude=.local \
-  --exclude='.env*' \
-  --exclude=artifacts --exclude=test-results --exclude=playwright-report --exclude=.pytest_cache \
-  --exclude='__pycache__' -cf - . | tar -C "$staging" -xf -
-(cd "$staging" && npm ci && uv sync --frozen --no-dev && npm run build && \
-  cp -R public .next/standalone/ && mkdir -p .next/standalone/.next && cp -R .next/static .next/standalone/.next/)
-rm -rf "$release_dir"
-mv "$staging" "$release_dir"
-
 old_target=
 if [ -L "$install_dir/current" ]; then
   candidate=$(readlink "$install_dir/current")
@@ -116,13 +103,27 @@ if [ -L "$install_dir/current" ]; then
     *) fail "current release link is unsafe" ;;
   esac
 fi
-ln -s "releases/$version" "$install_dir/.current.$version"
-mv -Tf "$install_dir/.current.$version" "$install_dir/current"
-activated=1
+
+staging=$install_dir/releases/.${version}.new
+rm -rf "$staging"
+mkdir -p "$staging"
+tar -C "$root" \
+  --exclude=.git --exclude='.next*' --exclude=node_modules --exclude=.venv --exclude=.local \
+  --exclude='.env*' \
+  --exclude=artifacts --exclude=test-results --exclude=playwright-report --exclude=.pytest_cache \
+  --exclude='__pycache__' -cf - . | tar -C "$staging" -xf -
+(cd "$staging" && npm ci && uv sync --frozen --no-dev && npm run build && \
+  cp -R public .next/standalone/ && mkdir -p .next/standalone/.next && cp -R .next/static .next/standalone/.next/)
+same_version_backup=
+activated=0
 rollback() {
   code=$?
   trap - EXIT HUP INT TERM
-  if [ "$activated" -eq 1 ]; then
+  if [ -n "$same_version_backup" ] && [ -e "$same_version_backup" ]; then
+    rm -rf "$release_dir"
+    mv "$same_version_backup" "$release_dir"
+    systemctl --user restart titanskies-web.service >/dev/null 2>&1 || true
+  elif [ "$activated" -eq 1 ]; then
     if [ -n "$old_target" ]; then
       ln -s "$old_target" "$install_dir/.rollback"
       mv -Tf "$install_dir/.rollback" "$install_dir/current"
@@ -139,6 +140,23 @@ trap rollback EXIT
 trap 'exit 129' HUP
 trap 'exit 130' INT
 trap 'exit 143' TERM
+
+if [ "$old_target" = "releases/$version" ]; then
+  same_version_backup=$install_dir/releases/.${version}.rollback
+  if [ -e "$same_version_backup" ]; then
+    same_version_backup=
+    fail "an unfinished rollback exists for TitanSkies $version"
+  fi
+  mv "$release_dir" "$same_version_backup"
+else
+  rm -rf "$release_dir"
+fi
+mv "$staging" "$release_dir"
+if [ -z "$same_version_backup" ]; then
+  ln -s "releases/$version" "$install_dir/.current.$version"
+  mv -Tf "$install_dir/.current.$version" "$install_dir/current"
+  activated=1
+fi
 
 sed -e "s|@CURRENT@|$install_dir/current|g" -e "s|@ENV@|$config_dir/env|g" -e "s|@DATA@|$configured_data|g" -e "s|@CACHE@|$configured_cache|g" "$root/packaging/systemd/titanskies-web.service" > "$unit_dir/titanskies-web.service"
 sed -e "s|@CURRENT@|$install_dir/current|g" -e "s|@ENV@|$config_dir/env|g" -e "s|@DATA@|$configured_data|g" -e "s|@CACHE@|$configured_cache|g" "$root/packaging/systemd/titanskies-ingest.service" > "$unit_dir/titanskies-ingest.service"
@@ -163,4 +181,5 @@ fi
 
 activated=0
 trap - EXIT HUP INT TERM
+if [ -n "$same_version_backup" ]; then rm -rf "$same_version_backup"; fi
 printf 'TitanSkies %s is running at %s\n' "$version" "$app_url"

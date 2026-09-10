@@ -24,6 +24,8 @@ Native updates use `scripts/update-user`, which verifies the release archive che
 
 Native `TITANSKIES_DATA_DIR` and `TITANSKIES_CACHE_DIR` values must be non-root absolute paths outside the versioned release directory. The installer resolves symlinks before rendering the systemd filesystem boundaries; uninstall refuses a symlinked installation directory. Purge removes the default XDG publication/cache directories, while custom paths are preserved for explicit manual removal.
 
+Uninstall confirms that the web and ingest services and ingest timer are inactive before removing application files. If no systemd user manager is available, uninstall continues with a prominent warning because shutdown cannot be confirmed; check for any surviving TitanSkies process before assuming a LAN-bound instance has stopped. A detected active unit aborts uninstall and preserves its files.
+
 ## Troubleshooting
 
 - `initializing`: run a single ingest and inspect its logs. Demo mode can confirm the application without network access.

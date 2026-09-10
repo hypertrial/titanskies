@@ -113,7 +113,7 @@ function HoverLabelOverlay({ positions, index, label }: { positions: Float32Arra
 }
 
 function PointCloud({ positions, sizes, colors, shapes, emphasis, onPick, pickRadius, hoverLabels, hoverEnabled = false, suppressHover = false }: { positions: Float32Array; sizes: Float32Array; colors: Float32Array; shapes: Float32Array; emphasis?: Float32Array; onPick: (index: number) => void; pickRadius: number; hoverLabels?: AirHoverLabel[]; hoverEnabled?: boolean; suppressHover?: boolean }) {
-  const { camera, gl, size } = useThree();
+  const { camera, gl, invalidate, size } = useThree();
   const [hovered, setHovered] = useState<number | null>(null);
   const pick = (event: ThreeEvent<PointerEvent | MouseEvent>) => closestIndex(event.intersections, event.object, positions, camera, event.pointer, size, pickRadius);
   const displayedEmphasis = useMemo(() => {
@@ -131,6 +131,7 @@ function PointCloud({ positions, sizes, colors, shapes, emphasis, onPick, pickRa
     setHovered(null);
     document.body.style.cursor = "default";
   }, [hoverEnabled, positions]);
+  useEffect(() => invalidate(), [invalidate, positions]);
   useEffect(() => () => { document.body.style.cursor = "default"; }, []);
   if (!sizes.length) return null;
   return <><points

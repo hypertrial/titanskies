@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import runpy
 import shutil
 import shlex
 import stat
@@ -29,7 +30,7 @@ def _fake_environment(tmp_path: Path) -> tuple[dict[str, str], Path]:
     _executable(
         fake_bin / "node",
         """if [ "${1:-}" = "-p" ]; then
-  case "${2:-}" in *package.json*) echo 0.1.0 ;; *) echo 22 ;; esac
+  case "$*" in *package.json*) echo 0.1.0 ;; *) echo 22 ;; esac
   exit 0
 fi
 if [ "${1:-}" = "-e" ]; then
@@ -54,11 +55,16 @@ exit 0
         'printf "%s\\n" "$*" >> "$FAKE_COMMAND_LOG"\n'
         'if [ -n "${FAKE_INSTALL_SIGNAL:-}" ] && [ "$*" = "--user start titanskies-ingest.service" ]; then kill "-${FAKE_INSTALL_SIGNAL}" "$PPID"; exit 0; fi\n'
         'if [ "${FAKE_INGEST_EXIT:-0}" -ne 0 ] && [ "$*" = "--user start titanskies-ingest.service" ]; then exit "$FAKE_INGEST_EXIT"; fi\n'
+        'if [ "${FAKE_SYSTEMCTL_EXIT:-0}" -ne 0 ]; then exit "$FAKE_SYSTEMCTL_EXIT"; fi\n'
+        'if [ "$*" = "--user daemon-reload" ] && [ "${FAKE_DAEMON_RELOAD_EXIT:-0}" -ne 0 ]; then exit "$FAKE_DAEMON_RELOAD_EXIT"; fi\n'
+        'case "$*" in "--user is-active "*) printf "%s\\n" "${FAKE_ACTIVE_STATE:-inactive}"; exit 0 ;; esac\n'
         "exit 0\n",
     )
     _executable(fake_bin / "sleep", "exit 0\n")
     _executable(
         fake_bin / "mv",
+        'for destination do :; done\n'
+        'case "$destination" in *.rollback) if [ "${FAKE_BACKUP_MOVE_EXIT:-0}" -ne 0 ]; then exit "$FAKE_BACKUP_MOVE_EXIT"; fi ;; esac\n'
         'if [ "${1:-}" = "-Tf" ]; then exec /bin/mv -f "$2" "$3"; fi\nexec /bin/mv "$@"\n',
     )
     env = {
@@ -122,6 +128,9 @@ def test_user_install_rollback_and_uninstall(tmp_path: Path) -> None:
     assert config.exists()
     assert (tmp_path / "state/titanskies").exists()
     assert (tmp_path / "cache/titanskies").exists()
+    commands = log.read_text(encoding="utf-8")
+    for unit in ("titanskies-web.service", "titanskies-ingest.service", "titanskies-ingest.timer"):
+        assert f"--user is-active {unit}" in commands
 
     subprocess.run([ROOT / "scripts/uninstall-user", "--purge"], cwd=ROOT, env=env, check=True)
     assert not config.parent.exists()
@@ -140,6 +149,52 @@ def test_failed_first_install_leaves_no_active_release(tmp_path: Path) -> None:
     )
     assert result.returncode != 0
     assert not (tmp_path / "data/titanskies/current").exists()
+
+
+def test_same_version_reinstall_restores_the_previous_release_on_failure(tmp_path: Path) -> None:
+    env, _ = _fake_environment(tmp_path)
+    subprocess.run([ROOT / "scripts/install-user"], cwd=ROOT, env=env, check=True)
+    install = tmp_path / "data/titanskies"
+    marker = install / "releases/0.1.0/known-good"
+    marker.write_text("keep", encoding="utf-8")
+
+    failed = subprocess.run(
+        [ROOT / "scripts/install-user"],
+        cwd=ROOT,
+        env={**env, "FAKE_NODE_HEALTH_EXIT": "1"},
+        capture_output=True,
+        text=True,
+    )
+
+    assert failed.returncode != 0
+    assert (install / "current").readlink() == Path("releases/0.1.0")
+    assert marker.read_text(encoding="utf-8") == "keep"
+    assert not (install / "releases/.0.1.0.rollback").exists()
+
+    subprocess.run([ROOT / "scripts/install-user"], cwd=ROOT, env=env, check=True)
+    assert not marker.exists()
+    assert not (install / "releases/.0.1.0.rollback").exists()
+
+
+def test_same_version_reinstall_preserves_release_when_backup_rename_fails(tmp_path: Path) -> None:
+    env, _ = _fake_environment(tmp_path)
+    subprocess.run([ROOT / "scripts/install-user"], cwd=ROOT, env=env, check=True)
+    install = tmp_path / "data/titanskies"
+    marker = install / "releases/0.1.0/known-good"
+    marker.write_text("keep", encoding="utf-8")
+
+    failed = subprocess.run(
+        [ROOT / "scripts/install-user"],
+        cwd=ROOT,
+        env={**env, "FAKE_BACKUP_MOVE_EXIT": "1"},
+        capture_output=True,
+        text=True,
+    )
+
+    assert failed.returncode != 0
+    assert (install / "current").readlink() == Path("releases/0.1.0")
+    assert marker.read_text(encoding="utf-8") == "keep"
+    assert not (install / "releases/.0.1.0.rollback").exists()
 
 
 def test_install_and_uninstall_reject_unsafe_xdg_roots(tmp_path: Path) -> None:
@@ -243,6 +298,84 @@ def test_uninstall_rejects_unknown_arguments(tmp_path: Path) -> None:
     assert result.returncode == 2
     assert "Usage:" in result.stderr
     assert not (tmp_path / "data/titanskies").exists()
+
+
+def test_uninstall_completes_when_systemd_user_manager_is_unavailable(tmp_path: Path) -> None:
+    env, log = _fake_environment(tmp_path)
+    subprocess.run([ROOT / "scripts/install-user"], cwd=ROOT, env=env, check=True)
+
+    result = subprocess.run(
+        [ROOT / "scripts/uninstall-user"],
+        cwd=ROOT,
+        env={**env, "FAKE_SYSTEMCTL_EXIT": "1"},
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0
+    assert not (tmp_path / "data/titanskies").exists()
+    assert (tmp_path / "config/titanskies/env").exists()
+    assert "service shutdown could not be confirmed" in result.stderr
+    commands = log.read_text(encoding="utf-8")
+    assert "disable --now titanskies-web.service titanskies-ingest.timer" in commands
+    assert "stop titanskies-ingest.service" in commands
+
+
+def test_uninstall_preserves_files_when_a_service_remains_active(tmp_path: Path) -> None:
+    env, _ = _fake_environment(tmp_path)
+    subprocess.run([ROOT / "scripts/install-user"], cwd=ROOT, env=env, check=True)
+    install = tmp_path / "data/titanskies"
+    unit = tmp_path / "config/systemd/user/titanskies-web.service"
+
+    result = subprocess.run(
+        [ROOT / "scripts/uninstall-user"],
+        cwd=ROOT,
+        env={**env, "FAKE_ACTIVE_STATE": "active"},
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode != 0
+    assert "still active" in result.stderr
+    assert (install / "current").exists()
+    assert unit.exists()
+
+
+def test_uninstall_warns_when_removed_units_cannot_be_reloaded(tmp_path: Path) -> None:
+    env, _ = _fake_environment(tmp_path)
+    subprocess.run([ROOT / "scripts/install-user"], cwd=ROOT, env=env, check=True)
+
+    result = subprocess.run(
+        [ROOT / "scripts/uninstall-user"],
+        cwd=ROOT,
+        env={**env, "FAKE_DAEMON_RELOAD_EXIT": "1"},
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0
+    assert "could not reload removed unit files" in result.stderr
+    assert not (tmp_path / "data/titanskies").exists()
+
+
+def test_installer_accepts_a_quoted_source_checkout_path(tmp_path: Path) -> None:
+    source = tmp_path / "release o'connor $safe"
+    (source / "scripts").mkdir(parents=True)
+    (source / "app").mkdir()
+    (source / "public").mkdir()
+    shutil.copy2(ROOT / "scripts/install-user", source / "scripts/install-user")
+    shutil.copy2(ROOT / "package.json", source / "package.json")
+    shutil.copy2(ROOT / ".env.example", source / ".env.example")
+    shutil.copytree(ROOT / "packaging", source / "packaging")
+    shutil.copy2(ROOT / "app/icon.png", source / "app/icon.png")
+    environment = tmp_path / "environment"
+    environment.mkdir()
+    env, _ = _fake_environment(environment)
+
+    result = subprocess.run([source / "scripts/install-user"], cwd=source, env=env, capture_output=True, text=True)
+
+    assert result.returncode == 0, result.stderr
+    assert (environment / "data/titanskies/current").readlink() == Path("releases/0.1.0")
 
 
 def test_signed_update_verifies_then_invokes_release_installer(tmp_path: Path) -> None:
@@ -498,6 +631,46 @@ def test_license_report_includes_every_locked_python_variant(tmp_path: Path) -> 
     assert ("numpy", "2.5.3") in locked
     assert ("tifffile", "2026.3.3") in locked
     assert ("tifffile", "2026.9.9") in locked
+    accepted = runpy.run_path(str(scripts / "license_report.py"))["accepted"]
+    assert accepted("Apache-2.0 AND LGPL-3.0-or-later AND MIT")
+    assert accepted("Apache-2.0 OR BSD-2-Clause")
+    assert accepted("Public Domain / CC0-1.0")
+    for restricted in ("CC-BY-NC-4.0", "CC-BY-ND-4.0", "MIT-ish", "LicenseRef-Commercial", "PROPRIETARY", "UNKNOWN"):
+        assert not accepted(restricted)
+
+
+def test_public_release_check_scans_all_runtime_hosts(tmp_path: Path) -> None:
+    root = tmp_path / "release-check"
+    (root / "scripts").mkdir(parents=True)
+    shutil.copy2(ROOT / "scripts/check_public_release.py", root / "scripts/check_public_release.py")
+    shutil.copytree(ROOT / "shared", root / "shared")
+    shutil.copytree(ROOT / "ingest", root / "ingest")
+    shutil.copytree(ROOT / ".github", root / ".github")
+    shutil.copy2(ROOT / "Dockerfile", root / "Dockerfile")
+    check = [sys.executable, str(root / "scripts/check_public_release.py")]
+    assert subprocess.run(check, cwd=root, capture_output=True, text=True).returncode == 0
+
+    added = root / "ingest/new_runtime_source.py"
+    added.write_text('DATA_URL = "https://example.invalid/provider"\n', encoding="utf-8")
+    unknown = subprocess.run(check, cwd=root, capture_output=True, text=True)
+    assert unknown.returncode == 1
+    assert "unregistered runtime data host" in unknown.stderr
+
+    added.write_text(
+        'HELP_URL = "https://www.airnow.gov/"\nAIRNOW_HELP_HOSTS = frozenset({"www.airnow.gov"})\n',
+        encoding="utf-8",
+    )
+    documentation_endpoint = subprocess.run(check, cwd=root, capture_output=True, text=True)
+    assert documentation_endpoint.returncode == 1
+    assert "non-endpoint host" in documentation_endpoint.stderr
+
+    added.write_text('HELP_URL = "https://www.airnow.gov/"\n', encoding="utf-8")
+    assert subprocess.run(check, cwd=root, capture_output=True, text=True).returncode == 0
+
+    added.write_text('import requests\nrequests.get("https://www.airnow.gov/data")\n', encoding="utf-8")
+    direct_client = subprocess.run(check, cwd=root, capture_output=True, text=True)
+    assert direct_client.returncode == 1
+    assert "direct network client import" in direct_client.stderr
 
 
 def _publication_for_probe(tmp_path: Path) -> tuple[Path, Path, dict, bytes]:
@@ -611,3 +784,27 @@ def test_workflows_pin_every_third_party_action_to_a_full_commit() -> None:
         uses = [line.split("@", 1)[1].split()[0] for line in workflow.read_text(encoding="utf-8").splitlines() if "uses:" in line]
         assert uses
         assert all(len(revision) == 40 and all(character in "0123456789abcdef" for character in revision) for revision in uses)
+
+
+def test_release_verification_isolated_from_publish_credentials() -> None:
+    workflow = (ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8")
+    verify = workflow[workflow.index("  verify:\n"):workflow.index("  image:\n")]
+    image = workflow[workflow.index("  image:\n"):workflow.index("  publish:\n")]
+    publish = workflow[workflow.index("  publish:\n"):]
+
+    assert "contents: read" in verify
+    assert "persist-credentials: false" in verify
+    assert "id-token: write" not in verify
+    assert "contents: write" not in verify
+    version_check = "test \"$(node -p 'require(\"./package.json\").version')\" = \"$version\""
+    assert version_check in verify
+    assert verify.index(version_check) < verify.index("npm ci")
+    assert "needs: verify" in image
+    assert "id-token: write" not in image
+    assert "persist-credentials: false" in image
+    assert "id-token: write" in publish
+    assert "persist-credentials: false" in publish
+    assert "npm ci" not in publish
+    assert "uv sync" not in publish
+    assert "verify_release.sh" not in publish
+    assert workflow.count("persist-credentials: false") == 3

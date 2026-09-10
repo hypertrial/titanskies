@@ -31,7 +31,6 @@ METADATA_TTL = timedelta(hours=12)
 METADATA_CACHE_PATH = "context/sinaica-stations.json"
 LOGGER = logging.getLogger("titanskies.sinaica")
 DAT_RE = re.compile(r"var\s+dat\s*=\s*(\[[\s\S]*?\]);")
-OPTION_RE = re.compile(r'<option[^>]*value=["\'](\d+)["\'][^>]*>([^<]+)</option>', re.I)
 STATION_ID_RE = re.compile(r"^\d{1,6}$")
 DEFAULT_ZONE = ZoneInfo("America/Mexico_City")
 STATE_ZONES = {
@@ -59,14 +58,18 @@ class _SelectParser(HTMLParser):
     def __init__(self) -> None:
         super().__init__()
         self.stations: list[tuple[str, str]] = []
+        self._in_station_select = False
         self._capture = False
         self._value = ""
         self._label: list[str] = []
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
-        if tag != "option":
-            return
         attributes = {key: value or "" for key, value in attrs}
+        if tag == "select":
+            self._in_station_select = attributes.get("id", "").lower() == "estacion"
+            return
+        if tag != "option" or not self._in_station_select:
+            return
         value = attributes.get("value", "")
         if STATION_ID_RE.match(value):
             self._capture = True
@@ -78,6 +81,10 @@ class _SelectParser(HTMLParser):
             self._label.append(data)
 
     def handle_endtag(self, tag: str) -> None:
+        if tag == "select":
+            self._in_station_select = False
+            self._capture = False
+            return
         if tag == "option" and self._capture:
             label = " ".join("".join(self._label).split())
             self.stations.append((self._value, label))
@@ -88,8 +95,6 @@ def parse_sinaica_stations(html: str) -> list[tuple[str, str]]:
     parser = _SelectParser()
     parser.feed(html)
     stations = [(identifier, name) for identifier, name in parser.stations if identifier != "0"]
-    if not stations:
-        stations = [(match.group(1), " ".join(match.group(2).split())) for match in OPTION_RE.finditer(html)]
     unique: dict[str, str] = {}
     for identifier, name in stations:
         if identifier == "0":

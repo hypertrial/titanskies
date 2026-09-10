@@ -35,10 +35,28 @@ cache_home=$(safe_base XDG_CACHE_HOME "$cache_home")
 install_dir=$data_home/titanskies
 [ ! -L "$install_dir" ] || fail "installation directory must not be a symlink"
 
+manager_available=0
+if systemctl --user show-environment >/dev/null 2>&1; then
+  manager_available=1
+fi
 systemctl --user disable --now titanskies-web.service titanskies-ingest.timer >/dev/null 2>&1 || true
 systemctl --user stop titanskies-ingest.service >/dev/null 2>&1 || true
+if [ "$manager_available" -eq 1 ]; then
+  for unit in titanskies-web.service titanskies-ingest.service titanskies-ingest.timer; do
+    state=$(systemctl --user is-active "$unit" 2>/dev/null || true)
+    case "$state" in
+      inactive|failed|unknown) ;;
+      active|activating|deactivating|reloading) fail "$unit is still active; application files were preserved" ;;
+      *) fail "could not confirm $unit stopped; application files were preserved" ;;
+    esac
+  done
+else
+  printf 'TitanSkies warning: the systemd user manager is unavailable; service shutdown could not be confirmed.\n' >&2
+fi
 rm -f "$config_home/systemd/user/titanskies-web.service" "$config_home/systemd/user/titanskies-ingest.service" "$config_home/systemd/user/titanskies-ingest.timer" "$data_home/applications/titanskies.desktop" "$data_home/icons/hicolor/512x512/apps/titanskies.png"
-systemctl --user daemon-reload
+if [ "$manager_available" -eq 1 ] && ! systemctl --user daemon-reload >/dev/null 2>&1; then
+  printf 'TitanSkies warning: systemd could not reload removed unit files; run systemctl --user daemon-reload when the manager is available.\n' >&2
+fi
 rm -rf "$install_dir/releases"
 rm -f "$install_dir/current" "$install_dir/.rollback"
 find "$install_dir" -maxdepth 1 -type l -name '.current.*' -delete 2>/dev/null || true

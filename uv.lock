@@ -918,6 +918,7 @@ dependencies = [
 [package.optional-dependencies]
 dev = [
     { name = "mypy" },
+    { name = "packaging" },
     { name = "pytest" },
 ]
 
@@ -927,6 +928,7 @@ requires-dist = [
     { name = "eccodeslib", specifier = "==2.48.0.26" },
     { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.18,<2" },
     { name = "numpy", specifier = ">=2.0,<3" },
+    { name = "packaging", marker = "extra == 'dev'", specifier = ">=24.2" },
     { name = "pillow", specifier = ">=11.0" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.3" },
     { name = "requests", specifier = ">=2.32" },

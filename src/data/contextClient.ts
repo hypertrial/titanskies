@@ -151,7 +151,7 @@ async function decodeBitmap(blob: Blob, signal: AbortSignal): Promise<ImageBitma
 }
 
 
-export async function loadContextImage(url: string, signal?: AbortSignal): Promise<ImageBitmap | HTMLImageElement> {
+export async function loadContextImage(url: string, signal?: AbortSignal, { preferImageElement = false }: { preferImageElement?: boolean } = {}): Promise<ImageBitmap | HTMLImageElement> {
   const controller = new AbortController();
   const abort = () => controller.abort(signal?.reason);
   if (signal?.aborted) abort();
@@ -162,7 +162,7 @@ export async function loadContextImage(url: string, signal?: AbortSignal): Promi
     if (!response.ok) throw new Error(`Failed to fetch texture ${url}`);
     const blob = await response.blob();
     if (controller.signal.aborted) throw controller.signal.reason;
-    if ("createImageBitmap" in window) return await decodeBitmap(blob, controller.signal);
+    if (!preferImageElement && "createImageBitmap" in window) return await decodeBitmap(blob, controller.signal);
     return await new Promise((resolve, reject) => {
       const image = new Image();
       const objectUrl = URL.createObjectURL(blob);

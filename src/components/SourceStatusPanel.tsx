@@ -17,6 +17,7 @@ const HEALTH_ISSUE_LABELS: Record<string, string> = {
   "invalid-status": "Publication status metadata is invalid.",
   "invalid-pointer": "The current publication pointer is invalid.",
   "invalid-manifest": "The current publication manifest is invalid.",
+  "invalid-assets": "One or more published data assets are missing or invalid.",
   "publication-unavailable": "Publication health data is unavailable.",
   "stale-heartbeat": "The scheduled data update is late.",
   "stale-forecast": "The latest complete forecast is stale.",
@@ -27,7 +28,7 @@ const HEALTH_ISSUE_LABELS: Record<string, string> = {
   "invalid-expected-source": "The health check configuration is invalid.",
 };
 
-function healthIssueLabel(issue: string): string {
+export function healthIssueLabel(issue: string): string {
   const sourceIssue = /^source-([a-z]+)-(stale|error|unavailable|missing)$/.exec(issue);
   if (sourceIssue) {
     const plural = sourceIssue[1] === "wfigs" || sourceIssue[1] === "cwfis";

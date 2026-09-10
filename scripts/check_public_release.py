@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import ast
 import json
 import re
 import sys
@@ -20,6 +21,8 @@ RETIRED_HOSTS = {
 }
 URL = re.compile(r"https://[^\"'\s)]+")
 ACTION = re.compile(r"^\s*(?:-\s*)?uses:\s*([^\s#]+)", re.MULTILINE)
+RUNTIME_METADATA_URLS = {"https://github.com/hypertrial/titanskies"}
+NETWORK_CLIENT_MODULES = {"aiohttp", "http.client", "httpx", "requests", "urllib.request"}
 
 
 def fail(message: str) -> None:
@@ -41,23 +44,61 @@ for item in sources:
     if not isinstance(item.get("endpointHosts"), list) or not item["endpointHosts"]:
         fail(f"{item.get('id')} has no endpoint host allowlist")
 
-allowed_hosts = {
+endpoint_hosts = {
+    host
+    for item in sources
+    for host in item.get("endpointHosts", [])
+}
+registered_hosts = {
     host
     for item in sources
     for key in ("endpointHosts", "documentationHosts")
     for host in item.get(key, [])
 }
-runtime_files = [ROOT / "ingest/config.py"] + [
-    ROOT / f"ingest/sources/{name}.py"
-    for name in ("airnow", "aqhi", "bc_air", "sinaica", "wildfires", "firework", "hrrr")
-]
+runtime_files = sorted((ROOT / "ingest").rglob("*.py"))
+runtime_host_registries: list[set[str]] = []
 for path in runtime_files:
-    for raw in URL.findall(path.read_text(encoding="utf-8")):
-        host = urlparse(raw.rstrip(".,")).hostname
+    source = path.read_text(encoding="utf-8")
+    tree = ast.parse(source, filename=str(path))
+    for raw in URL.findall(source):
+        normalized = raw.rstrip(".,")
+        if normalized in RUNTIME_METADATA_URLS:
+            continue
+        host = urlparse(normalized).hostname
         if host in RETIRED_HOSTS:
             fail(f"retired data host {host} in {path.relative_to(ROOT)}")
-        if host not in allowed_hosts:
+        if host not in registered_hosts:
             fail(f"unregistered runtime data host {host} in {path.relative_to(ROOT)}")
+    for node in ast.walk(tree):
+        imported: list[str] = []
+        if isinstance(node, ast.Import):
+            imported = [alias.name for alias in node.names]
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            imported = [f"{node.module}.{alias.name}" for alias in node.names]
+        if path != ROOT / "ingest/http.py" and any(
+            name == module or name.startswith(module + ".")
+            for name in imported
+            for module in NETWORK_CLIENT_MODULES
+        ):
+            fail(f"direct network client import in {path.relative_to(ROOT)}")
+        if not isinstance(node, (ast.Assign, ast.AnnAssign)):
+            continue
+        targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+        if any(isinstance(target, ast.Name) and target.id == "REGISTERED_ENDPOINT_HOSTS" for target in targets):
+            runtime_host_registries.append({
+                value.value
+                for value in ast.walk(node.value)
+                if isinstance(value, ast.Constant) and isinstance(value.value, str)
+            })
+        if not any(isinstance(target, ast.Name) and target.id.endswith("HOSTS") for target in targets):
+            continue
+        if node.value is None:
+            continue
+        for value in ast.walk(node.value):
+            if isinstance(value, ast.Constant) and isinstance(value.value, str) and "." in value.value and value.value not in endpoint_hosts:
+                fail(f"non-endpoint host {value.value} in {path.relative_to(ROOT)}")
+if runtime_host_registries != [endpoint_hosts]:
+    fail("shared HTTP endpoint hosts differ from the source registry")
 
 for path in (ROOT / "ingest").rglob("*.py"):
     text = path.read_text(encoding="utf-8").lower()

@@ -93,7 +93,7 @@ export async function hoverNearbyAirMarker(page: import("@playwright/test").Page
   return hover;
 }
 
-export async function useLiveContext(page: import("@playwright/test").Page, now: string, shiftHours = 0, healthStatus: "healthy" | "degraded" | "unhealthy" = "healthy") {
+export async function useLiveContext(page: import("@playwright/test").Page, now: string, shiftHours = 0, healthStatus: "healthy" | "degraded" | "unhealthy" = "healthy", healthIssues?: string[]) {
   await page.clock.setFixedTime(new Date(now));
   const pointerAgeMinutes = healthStatus === "unhealthy" ? 35 : 8;
   await page.route("**/api/context-health?**", async (route) => {
@@ -121,7 +121,7 @@ export async function useLiveContext(page: import("@playwright/test").Page, now:
       forecastLastValidTime: new Date(Date.parse(now) + 36 * 3_600_000).toISOString(),
       remainingCoverageHours: 36,
       sources,
-      issues: healthStatus === "healthy" ? [] : healthStatus === "degraded" ? ["source-firework-stale"] : ["stale-heartbeat", "stale-forecast"],
+      issues: healthIssues ?? (healthStatus === "healthy" ? [] : healthStatus === "degraded" ? ["source-firework-stale"] : ["stale-heartbeat", "stale-forecast"]),
     } });
   });
   await page.route("**/context/manifests/*.json", async (route) => {

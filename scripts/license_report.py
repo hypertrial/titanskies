@@ -7,19 +7,32 @@ import json
 import tomllib
 from pathlib import Path
 
+from packaging.licenses import InvalidLicenseExpression, canonicalize_license_expression
+
 ROOT = Path(__file__).resolve().parent.parent
 OUT = ROOT / "artifacts/license-report.json"
 NOTICES = ROOT / "artifacts/THIRD_PARTY_NOTICES.md"
 OVERRIDES = json.loads((ROOT / "shared/license-overrides.json").read_text(encoding="utf-8"))["packages"]
 ASSET_REGISTRY = json.loads((ROOT / "shared/bundled-assets.json").read_text(encoding="utf-8"))
-OPEN_MARKERS = ("MIT", "BSD", "ISC", "Apache", "MPL", "LGPL", "CC0", "CC-BY", "BlueOak", "Python", "PSF", "Zlib", "0BSD", "Public Domain")
-BLOCKED_MARKERS = ("UNKNOWN", "UNLICENSED", "PROPRIETARY", "COMMERCIAL")
+OPEN_LICENSES = {
+    "0BSD", "Apache-2.0", "BSD-2-Clause", "BSD-3-Clause", "BlueOak-1.0.0",
+    "CC-BY-4.0", "CC0-1.0", "ISC", "LGPL-3.0-or-later", "MIT", "MIT-0",
+    "MIT-CMU", "MPL-2.0", "PSF-2.0", "Python-2.0", "Zlib",
+}
+LICENSE_ALIASES = {
+    "Apache License Version 2.0": "Apache-2.0",
+    "Public Domain": "CC0-1.0",
+    "Public Domain / CC0-1.0": "CC0-1.0",
+}
 
 
 def accepted(value: str) -> bool:
-    normalized = value.upper()
-    return bool(value) and not any(marker in normalized for marker in BLOCKED_MARKERS) \
-        and any(marker.upper() in normalized for marker in OPEN_MARKERS)
+    try:
+        expression = canonicalize_license_expression(LICENSE_ALIASES.get(value, value))
+    except InvalidLicenseExpression:
+        return False
+    identifiers = expression.replace("(", " ").replace(")", " ").split()
+    return all(identifier in {"AND", "OR"} or identifier in OPEN_LICENSES for identifier in identifiers)
 
 
 lock = json.loads((ROOT / "package-lock.json").read_text(encoding="utf-8"))

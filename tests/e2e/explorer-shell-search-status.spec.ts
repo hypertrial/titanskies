@@ -438,6 +438,14 @@ test("opens complete Data status from concise freshness and restores focus", asy
   await expect(trigger).toBeFocused();
 });
 
+test("explains invalid publication assets in Data status", async ({ page }) => {
+  await useLiveContext(page, "2024-07-15T20:30:00Z", 0, "degraded", ["invalid-assets"]);
+  await page.goto("/");
+  await waitForReady(page);
+  await page.getByTestId("source-badge").click();
+  await expect(page.getByRole("dialog", { name: "Data status" })).toContainText("One or more published data assets are missing or invalid.");
+});
+
 test("searches major cities with keyboard access and shows current smoke plus nearby AQI", async ({ page }) => {
   await page.goto("/"); await waitForReady(page);
   const search = page.getByTestId("location-search-input");
@@ -551,6 +559,55 @@ test("shows separate accessible top-five smoke and comparable AQI rankings", asy
   await page.locator(".brand-lockup").click();
   await expect(panel).toBeHidden();
   await expect(trigger).toBeFocused();
+});
+
+test("keeps open AQI rankings current across a publication refresh", async ({ page }) => {
+  await useLiveContext(page, "2024-07-15T20:30:00Z");
+  await page.goto("/");
+  await waitForReady(page);
+  await page.getByRole("button", { name: "Worst 5 conditions" }).click();
+  const panel = page.getByRole("dialog", { name: "Highest conditions" });
+  await panel.getByRole("tab", { name: "PM2.5 AQI" }).click();
+  const rows = panel.getByRole("tabpanel", { name: "PM2.5 AQI" }).locator(".top-conditions-list li");
+  await expect(rows).toHaveCount(5);
+
+  let refreshes = 0;
+  let monitorRefreshes = 0;
+  await page.route("**/*-monitors.json?publication=next", async (route) => {
+    const response = await route.fetch();
+    const payload = await response.json();
+    payload.monitors = payload.monitors.map((monitor: Record<string, unknown>) => ({
+      ...monitor,
+      observedAt: "2024-07-15T20:31:00Z",
+    }));
+    await route.fulfill({ response, json: payload });
+    monitorRefreshes += 1;
+  });
+  await page.route("**/context/manifests/*.json", async (route) => {
+    refreshes += 1;
+    const response = await route.fetch();
+    const manifest = await response.json();
+    manifest.mode = "live";
+    manifest.generatedAt = "2024-07-15T20:30:00Z";
+    manifest.air.observedAt = "2024-07-15T20:31:00Z";
+    for (const set of Object.values(manifest.air.monitorSets) as Array<Record<string, unknown>>) {
+      set.observedAt = "2024-07-15T20:31:00Z";
+      set.url = `${set.url}?publication=next`;
+    }
+    for (const name of ["airnow", "bcair", "sinaica", "aqhi"]) {
+      manifest.sources[name].checkedAt = "2024-07-15T20:31:00Z";
+      manifest.sources[name].observedAt = "2024-07-15T20:31:00Z";
+    }
+    await route.fulfill({ response, json: manifest });
+  });
+
+  await page.clock.setFixedTime(new Date("2024-07-15T20:32:00Z"));
+  await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
+  await expect.poll(() => refreshes).toBeGreaterThan(0);
+  await expect(rows).toHaveCount(5);
+  await expect(panel.getByText("No recent comparable city monitor readings are available.")).toHaveCount(0);
+  await expect.poll(() => monitorRefreshes).toBe(4);
+  await page.unrouteAll({ behavior: "wait" });
 });
 
 test("preserves the ranked future forecast time when focusing a top smoke city", async ({ page }) => {

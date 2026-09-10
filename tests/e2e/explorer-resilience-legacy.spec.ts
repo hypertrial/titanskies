@@ -250,6 +250,21 @@ test("recovers after geographic context fails", async ({ page }) => {
   expect(requests).toBeGreaterThan(failedRequests);
 });
 
+test("times out and retries a stalled geographic context request", async ({ page }) => {
+  test.setTimeout(45_000);
+  let release!: () => void;
+  const held = new Promise<void>((resolve) => { release = resolve; });
+  await page.route("**/geo/north-america-v3.json", async (route) => {
+    await held;
+    await route.continue().catch(() => undefined);
+  });
+  await page.goto("/");
+  await expect(page.getByTestId("error-state")).toContainText("political boundaries", { timeout: 16_500 });
+  release();
+  await page.getByRole("button", { name: "Retry" }).click();
+  await waitForReady(page);
+});
+
 test("contains a failed Earth texture and retries without unmounting the app", async ({ page }) => {
   let fail = true;
   await page.route("**/geo/earth-dark-v2.webp", (route) => fail ? route.abort("failed") : route.continue());
@@ -260,6 +275,21 @@ test("contains a failed Earth texture and retries without unmounting the app", a
   await page.getByRole("button", { name: "Retry" }).click();
   await waitForReady(page);
   await expect(page.getByTestId("error-state")).toHaveCount(0);
+});
+
+test("times out and retries a stalled Earth texture request", async ({ page }) => {
+  test.setTimeout(45_000);
+  let release!: () => void;
+  const held = new Promise<void>((resolve) => { release = resolve; });
+  await page.route("**/geo/earth-dark-v2.webp", async (route) => {
+    await held;
+    await route.continue().catch(() => undefined);
+  });
+  await page.goto("/");
+  await expect(page.getByTestId("error-state")).toContainText("This view couldn’t load", { timeout: 16_500 });
+  release();
+  await page.getByRole("button", { name: "Retry" }).click();
+  await waitForReady(page);
 });
 
 test("retries failed forecast textures at unchanged URLs", async ({ page }) => {

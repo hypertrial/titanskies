@@ -7,7 +7,7 @@ import { inspectLabelInsets, placeHoverLabel } from "@/rendering/hoverLabelLayou
 import { keyboardInspectSelection, shouldInspectMapClick } from "@/data/inspectPoint";
 import { inspectPointerFromEvent, isInspectClick, type InspectPointer, type InspectPointerEvent } from "@/rendering/inspectClick";
 import { adaptiveDpr, cameraGestureProfile, CAMERA_FOV, cameraSafeInsets, fitOverviewDistance, locationCameraPosition, MIN_CAMERA_DISTANCE, overviewResetDistance, visibleDetailTiles } from "@/rendering/camera";
-import { Html, OrbitControls, useTexture } from "@react-three/drei";
+import { Html, OrbitControls } from "@react-three/drei";
 import { Canvas, useFrame, useThree } from "@react-three/fiber";
 import { Component, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Color, MathUtils, Vector3 } from "three";
@@ -40,7 +40,6 @@ class SceneAssetBoundary extends Component<{
 
   componentDidUpdate(previous: Readonly<{ resetKey: number }>) {
     if (this.state.failed && previous.resetKey !== this.props.resetKey) {
-      useTexture.clear("/geo/earth-dark-v2.webp");
       this.setState({ failed: false });
     }
   }
@@ -130,6 +129,7 @@ function SelectionMarker({ lon, lat, label, mobile, compactLabels }: { lon: numb
 type SmokeSceneProps = {
   layers: LayerVisibility;
   geo: GeoContext | null;
+  earthImage: ImageBitmap | HTMLImageElement | null;
   mobile: boolean;
   compactLabels: boolean;
   monitors: AirQualityMonitor[];
@@ -290,6 +290,7 @@ function ForecastFrame({ mix, opacity, mixRef, fromIndex, toIndex, onPairCommitt
 export function SmokeScene({
   layers,
   geo,
+  earthImage,
   mobile,
   compactLabels,
   monitors,
@@ -435,7 +436,7 @@ export function SmokeScene({
     >
       <SceneAssetBoundary resetKey={sceneRetryKey} onError={onSceneError}>
         <Suspense fallback={null}>
-          <EarthGlobe mobile={mobile || compactLabels} geo={geo} onReady={onReady} />
+          <EarthGlobe mobile={mobile || compactLabels} geo={geo} image={earthImage} onReady={onReady} />
         </Suspense>
       </SceneAssetBoundary>
       <Suspense fallback={null}>

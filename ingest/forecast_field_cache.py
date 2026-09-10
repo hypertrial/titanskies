@@ -9,7 +9,6 @@ import zlib
 from typing import Any
 
 import numpy as np
-import requests
 
 from ingest.local_store import FrameStore
 from ingest.context_contracts import CONTEXT_BOUNDS, CONTEXT_FIELD_BUDGET_BYTES, DETAIL_HEIGHT, DETAIL_WIDTH
@@ -216,7 +215,7 @@ class FieldCache:
         self.retained: dict[str, str] = {}
         try:
             raw = store.get_text(FIELD_CACHE_INDEX_PATH)
-        except (OSError, UnicodeError, requests.RequestException, RuntimeError) as exc:
+        except (OSError, UnicodeError, RuntimeError) as exc:
             if "deadline" in str(exc).lower():
                 raise
             raw = None
@@ -252,7 +251,7 @@ class FieldCache:
             return None
         try:
             data = self.store.get_bytes(path, max_bytes=FIELD_CACHE_COMPRESSED_MAX_BYTES)
-        except (OSError, requests.RequestException, RuntimeError) as exc:
+        except (OSError, RuntimeError) as exc:
             if "deadline" in str(exc).lower():
                 raise
             with self._lock:

@@ -8,7 +8,7 @@ from unittest.mock import patch
 import pytest
 
 from ingest.local_store import LocalFrameStore, StoragePage
-from ingest.context_gc import GRACE_SECONDS, STATE_PATH, reconcile_orphans
+from ingest.context_gc import DELETE_BATCH, GRACE_SECONDS, PAGE_SIZE, PREFIXES, STATE_PATH, reconcile_orphans
 from ingest.context_publish import _cleanup_context_assets
 
 NOW = datetime(2026, 9, 7, tzinfo=timezone.utc)
@@ -237,7 +237,7 @@ def test_pages_and_deletions_are_bounded(publication):
     renew(publication, later)
     with patch.object(store, "delete_many", wraps=store.delete_many) as deleted:
         run(publication, later)
-        assert len(deleted.call_args.args[0]) == 64
+        assert len(deleted.call_args.args[0]) == 271
 
 
 def test_full_queue_can_delete_and_partial_page_cannot_overflow(publication):
@@ -250,12 +250,28 @@ def test_full_queue_can_delete_and_partial_page_cannot_overflow(publication):
     renew(publication, later)
     with patch.object(store, "delete_many", wraps=store.delete_many) as deleted:
         run(publication, later)
-        assert len(deleted.call_args.args[0]) == 64
+        assert len(deleted.call_args.args[0]) == DELETE_BATCH
     state = json.loads(store.get_text(STATE_PATH))
     assert len(state["pending"]) <= 4096
     with patch.object(store, "list_page", return_value=StoragePage([ORPHAN] * 251, "bad")):
         run(publication, later)
     assert len(json.loads(store.get_text(STATE_PATH))["pending"]) <= 4096
+
+
+def test_deletion_capacity_matches_maximum_candidate_admission(publication):
+    assert DELETE_BATCH == PAGE_SIZE * len(PREFIXES)
+    store = publication[0]
+    run(publication)
+    state = json.loads(store.get_text(STATE_PATH))
+    candidates = {f"context/assets/{i:020x}/orphan.png": NOW.timestamp() for i in range(1200)}
+    state["pending"] = candidates.copy()
+    store.put_json(STATE_PATH, state, cache_seconds=0, overwrite=True)
+    later = NOW + timedelta(seconds=GRACE_SECONDS)
+    for _ in range(3):
+        renew(publication, later)
+        run(publication, later)
+    remaining = json.loads(store.get_text(STATE_PATH))["pending"]
+    assert candidates.keys().isdisjoint(remaining)
 
 
 def test_no_work_without_finalization_reserve(publication):

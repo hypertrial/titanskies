@@ -4,7 +4,7 @@ import type { GeoContext, MapLabelTier, MapPlaceLabel } from "@/data/ui";
 import { cameraSafeInsets } from "@/rendering/camera";
 import { frontSideOpacity, isScreenPointInSafeViewport, mapLabelLevelOpacity, placeMapLabels, type ScreenLabelCandidate } from "@/rendering/mapLabels";
 import { lonLatToVector3 } from "@/rendering/projection";
-import { Html, Line, useTexture } from "@react-three/drei";
+import { Html, Line } from "@react-three/drei";
 import { useFrame, useThree } from "@react-three/fiber";
 import { memo, useCallback, useEffect, useMemo, useRef } from "react";
 import {
@@ -12,6 +12,7 @@ import {
   BackSide,
   Color,
   SRGBColorSpace,
+  Texture,
   Vector3,
 } from "three";
 
@@ -316,22 +317,29 @@ function MapLabelLayer({ compact, geo }: { compact: boolean; geo: GeoContext }) 
   );
 }
 
-export const EarthGlobe = memo(function EarthGlobe({ mobile, geo, onReady }: { mobile: boolean; geo: GeoContext | null; onReady: () => void }) {
-  const texture = useTexture("/geo/earth-dark-v2.webp");
+export const EarthGlobe = memo(function EarthGlobe({ mobile, geo, image, onReady }: { mobile: boolean; geo: GeoContext | null; image: ImageBitmap | HTMLImageElement | null; onReady: () => void }) {
   const { gl, invalidate } = useThree();
-  texture.colorSpace = SRGBColorSpace;
-  texture.anisotropy = gl.capabilities.getMaxAnisotropy();
+  const texture = useMemo(() => {
+    if (!image) return null;
+    const value = new Texture(image);
+    value.colorSpace = SRGBColorSpace;
+    value.anisotropy = gl.capabilities.getMaxAnisotropy();
+    value.needsUpdate = true;
+    return value;
+  }, [gl, image]);
+  useEffect(() => () => texture?.dispose(), [texture]);
 
   useEffect(() => {
-    if (!geo) return;
+    if (!geo || !texture) return;
     invalidate();
     onReady();
-  }, [geo, invalidate, onReady]);
+  }, [geo, invalidate, onReady, texture]);
 
   const coastlines = useMemo(() => segmentPoints(geo?.coastlines ?? [], 1.008), [geo]);
   const countryBorders = useMemo(() => segmentPoints(geo?.countryBorders ?? [], 1.011), [geo]);
   const regionBorders = useMemo(() => segmentPoints(geo?.regionBorders ?? [], 1.009), [geo]);
 
+  if (!texture) return null;
   return (
     <group>
       <mesh renderOrder={0}>
