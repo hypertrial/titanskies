@@ -1,9 +1,43 @@
-# TitanSkies engineering guardrails
+# Agent entry point
 
-- Preserve the v8 publication contract and atomic publish sequence: immutable assets, immutable manifest, then atomic `context/latest.json` replacement.
-- Decode HRRR `MASSDEN` from kg/m³ to µg/m³. Accept ecCodes `shortName=UNKNOWN` only for GRIB identity `(discipline=0, parameterCategory=20, parameterNumber=0, level=8, typeOfLevel=heightAboveGround)`.
-- Stitch forecast cycles by absolute valid time, not lead index. Treat all-black FireWork rasters as invalid. Keep the 200 km HRRR edge feather and land/coastal mask.
-- Missing values are unavailable, never zero. A provider failure must not erase healthy providers; retain only validated last-good source assets and the last valid publication.
-- Keep the application read-only over HTTP. Validate all served paths against traversal, symlink escape, size, and MIME allowlists.
-- Never commit secrets or fetched live datasets. Register and document every runtime data host and its provider terms.
-- Run `./scripts/verify-fast` for focused changes, `./scripts/verify` before merging, and `npm run verify:release` before a public release.
+This repository uses the Universal Pad specification for non-trivial agentic work.
+
+**Git** is the source of truth for code. **CI** is the source of truth for verification. **Pad** is the source of truth for intent, scope, status, dependencies, decisions, evidence, and handoffs.
+
+Read [`PROJECT_AGENT.md`](PROJECT_AGENT.md) before implementation. It holds repository-specific invariants, stack notes, and the native verification commands wrapped by `scripts/verify-fast` and `scripts/verify`.
+
+## Work
+
+Use Pad collections **Work** and **Plans** only.
+
+Work types: Feature, Bug, Refactor, Investigation, Maintenance. Plans are multi-ticket containers only.
+
+Statuses (machine values): `backlog`, `ready`, `in-progress`, `blocked`, `review`, `done`.
+
+Risk: `r0` (trivial), `r1` (normal), `r2` (consequential), `r3` (critical).
+
+Do not create Ideas, Tasks, chores, or extra default types. Do not run the Pad onboard playbook.
+
+## Lifecycle
+
+specify → test/reproduce → implement → targeted verification → full verification → adversarial review → fix findings → re-verify → CI → evidence → done
+
+Do not start material implementation until the ticket is `ready`: intended behavior, invariants, regression surface, and verification are specified.
+
+Implement the smallest coherent change. Do not silently expand scope. Put unrelated work in a new Pad ticket.
+
+## Verification
+
+Development feedback: `scripts/verify-fast`
+
+Completion gate: `scripts/verify`
+
+A ticket is not `done` while required verification is failing or unrun. Record why if a required command cannot run.
+
+## Evidence and handoffs
+
+Record decisions with `pad item decide`. Represent blockers as Pad dependencies, not prose.
+
+Incomplete work must include a handoff a fresh agent can resume without chat history.
+
+R2/R3 work needs independent adversarial review before `done`.
