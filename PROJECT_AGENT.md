@@ -38,4 +38,5 @@ Wrappers (do not rewrite without a dedicated ticket):
 Additional completion evidence named by native CI, recorded on the ticket when
 run: `npm run check:public`, `uv run mypy`, `uv run pytest`, Playwright e2e,
 docker image build, and compose smoke. `npm run verify:release` remains the
-public-release gate.
+public-release gate. `check:public` allows committed `.pad.toml` (workspace slug
+only) and still rejects a `.pad/` directory.

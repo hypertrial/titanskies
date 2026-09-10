@@ -124,7 +124,7 @@ for path in ROOT.rglob("*"):
     if "@vercel/" in text or "vercel-storage.com" in text or "blob_read_write_token" in text:
         fail(f"proprietary deployment reference in {relative}")
 
-if (ROOT / ".pad").exists() or (ROOT / ".pad.toml").exists():
+if (ROOT / ".pad").exists():
     fail("private Pad metadata is present")
 for workflow in (ROOT / ".github/workflows").glob("*.y*ml"):
     for action in ACTION.findall(workflow.read_text(encoding="utf-8")):

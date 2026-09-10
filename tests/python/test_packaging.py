@@ -650,6 +650,15 @@ def test_public_release_check_scans_all_runtime_hosts(tmp_path: Path) -> None:
     check = [sys.executable, str(root / "scripts/check_public_release.py")]
     assert subprocess.run(check, cwd=root, capture_output=True, text=True).returncode == 0
 
+    (root / ".pad.toml").write_text('workspace = "titanskies-smoke-engineering"\n', encoding="utf-8")
+    assert subprocess.run(check, cwd=root, capture_output=True, text=True).returncode == 0
+    (root / ".pad").mkdir()
+    (root / ".pad" / "items.json").write_text("{}", encoding="utf-8")
+    private_pad = subprocess.run(check, cwd=root, capture_output=True, text=True)
+    assert private_pad.returncode == 1
+    assert "private Pad metadata is present" in private_pad.stderr
+    shutil.rmtree(root / ".pad")
+
     added = root / "ingest/new_runtime_source.py"
     added.write_text('DATA_URL = "https://example.invalid/provider"\n', encoding="utf-8")
     unknown = subprocess.run(check, cwd=root, capture_output=True, text=True)
