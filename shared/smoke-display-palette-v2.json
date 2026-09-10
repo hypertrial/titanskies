@@ -1,0 +1,28 @@
+{
+  "version": 2,
+  "units": "µg/m³",
+  "processingVersion": "titanskies-smoke-display-v2",
+  "colorModel": "ramp",
+  "lutStepsPerInterval": 24,
+  "textureScaleMax": 1000,
+  "thresholds": [
+    { "min": 0, "max": 1, "rgba": [0, 0, 0, 0] },
+    { "min": 1, "max": 5, "rgba": [77, 163, 255, 40], "rgbaEnd": [39, 120, 232, 90] },
+    { "min": 5, "max": 10, "rgba": [39, 120, 232, 90], "rgbaEnd": [0, 191, 255, 135] },
+    { "min": 10, "max": 20, "rgba": [0, 191, 255, 135], "rgbaEnd": [0, 181, 164, 170] },
+    { "min": 20, "max": 40, "rgba": [0, 181, 164, 170], "rgbaEnd": [245, 185, 66, 200] },
+    { "min": 40, "max": 60, "rgba": [245, 185, 66, 200], "rgbaEnd": [255, 128, 32, 220] },
+    { "min": 60, "max": 100, "rgba": [255, 128, 32, 220], "rgbaEnd": [239, 60, 52, 238] },
+    { "min": 100, "max": 150, "rgba": [239, 60, 52, 238], "rgbaEnd": [184, 30, 45, 247] },
+    { "min": 150, "max": 250, "rgba": [184, 30, 45, 247], "rgbaEnd": [122, 22, 45, 252] },
+    { "min": 250, "max": 500, "rgba": [122, 22, 45, 252], "rgbaEnd": [102, 18, 73, 254] },
+    { "min": 500, "max": 1000, "rgba": [102, 18, 73, 254], "rgbaEnd": [82, 16, 105, 255] },
+    { "min": 1000, "max": 100000, "rgba": [82, 16, 105, 255] }
+  ],
+  "mask": {
+    "none": [0, 0, 0, 0],
+    "firework": [32, 96, 176, 255],
+    "hrrr": [208, 88, 48, 255],
+    "combined": [71, 166, 139, 255]
+  }
+}

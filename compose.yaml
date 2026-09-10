@@ -1,0 +1,55 @@
+name: titanskies
+
+x-service: &service
+  image: ghcr.io/hypertrial/titanskies:${TITANSKIES_VERSION:-v0.1.0}
+  build:
+    context: .
+  restart: unless-stopped
+  read_only: true
+  cap_drop: [ALL]
+  security_opt: ["no-new-privileges:true"]
+  tmpfs:
+    - /tmp:rw,noexec,nosuid,size=256m
+  environment: &environment
+    CONTEXT_SOURCE: ${CONTEXT_SOURCE:-live}
+    TITANSKIES_DATA_DIR: /var/lib/titanskies
+    TITANSKIES_CACHE_DIR: /var/cache/titanskies
+    CONTEXT_WATCH_SECONDS: ${CONTEXT_WATCH_SECONDS:-900}
+    AIRNOW_API_KEY: ${AIRNOW_API_KEY:-}
+
+services:
+  web:
+    <<: *service
+    command: [web]
+    environment:
+      <<: *environment
+      TITANSKIES_BIND_ADDR: 0.0.0.0
+      TITANSKIES_PORT: 8080
+    ports:
+      - "127.0.0.1:${TITANSKIES_PORT:-8080}:8080"
+    volumes:
+      - data:/var/lib/titanskies:ro
+    healthcheck:
+      test: [CMD, node, -e, "fetch('http://127.0.0.1:8080/api/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+  ingest:
+    <<: *service
+    command: [ingest]
+    environment: *environment
+    volumes:
+      - data:/var/lib/titanskies
+      - cache:/var/cache/titanskies
+    healthcheck:
+      test: [CMD, .venv/bin/python, scripts/check-publication.py]
+      interval: 5m
+      timeout: 10s
+      retries: 2
+      start_period: 10m
+
+volumes:
+  data:
+  cache:

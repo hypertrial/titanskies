@@ -1,0 +1,37 @@
+#!/bin/sh
+set -eu
+
+fail() { printf 'TitanSkies: %s\n' "$*" >&2; exit 1; }
+purge=0
+case "$#:${1:-}" in
+  0:) ;;
+  1:--purge) purge=1 ;;
+  *) printf 'Usage: %s [--purge]\n' "$0" >&2; exit 2 ;;
+esac
+config_home=${XDG_CONFIG_HOME:-"$HOME/.config"}
+data_home=${XDG_DATA_HOME:-"$HOME/.local/share"}
+state_home=${XDG_STATE_HOME:-"$HOME/.local/state"}
+cache_home=${XDG_CACHE_HOME:-"$HOME/.cache"}
+safe_base() {
+  case "$2" in
+    /|"") fail "$1 must be a non-root absolute path" ;;
+    /*) ;;
+    *) fail "$1 must be an absolute path" ;;
+  esac
+}
+safe_base XDG_CONFIG_HOME "$config_home"
+safe_base XDG_DATA_HOME "$data_home"
+safe_base XDG_STATE_HOME "$state_home"
+safe_base XDG_CACHE_HOME "$cache_home"
+
+systemctl --user disable --now titanskies-web.service titanskies-ingest.timer >/dev/null 2>&1 || true
+systemctl --user stop titanskies-ingest.service >/dev/null 2>&1 || true
+rm -f "$config_home/systemd/user/titanskies-web.service" "$config_home/systemd/user/titanskies-ingest.service" "$config_home/systemd/user/titanskies-ingest.timer" "$data_home/applications/titanskies.desktop" "$data_home/icons/hicolor/512x512/apps/titanskies.png"
+systemctl --user daemon-reload
+rm -rf "$data_home/titanskies"
+if [ "$purge" -eq 1 ]; then
+  rm -rf "$config_home/titanskies" "$state_home/titanskies" "$cache_home/titanskies"
+  echo "TitanSkies and its configuration, publications, and cache were removed."
+else
+  echo "TitanSkies was removed. Configuration and data were preserved; pass --purge to remove them."
+fi

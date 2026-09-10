@@ -1,0 +1,34 @@
+{
+  "version": 3,
+  "units": "µg/m³",
+  "processingVersion": "smoke-palette-v3",
+  "style": "FW-SFC-PM-DIFF",
+  "styleSource": "ECCC-MSC/geomet-mapfile geomet_mapfile/resources/mapserv/class/FW-SFC-PM-DIFF_UGM3.json",
+  "styleRevision": "05e5f51d6bbd85686447f082894cf308ab8683fa",
+  "colorModel": "ramp",
+  "overlayAlpha": 255,
+  "lutStepsPerInterval": 24,
+  "variable": {
+    "hrrr": "hrrr_smoke_concentration",
+    "firework": "firework_wildfire_pm25"
+  },
+  "thresholds": [
+    { "min": 0, "max": 1, "rgba": [0, 0, 0, 0] },
+    { "min": 1, "max": 5, "rgba": [204, 204, 204, 255], "rgbaEnd": [0, 0, 254, 255] },
+    { "min": 5, "max": 10, "rgba": [0, 0, 254, 255], "rgbaEnd": [0, 135, 225, 255] },
+    { "min": 10, "max": 20, "rgba": [0, 135, 225, 255], "rgbaEnd": [0, 204, 255, 255] },
+    { "min": 20, "max": 40, "rgba": [0, 204, 255, 255], "rgbaEnd": [123, 224, 107, 255] },
+    { "min": 40, "max": 60, "rgba": [123, 224, 107, 255], "rgbaEnd": [255, 255, 0, 255] },
+    { "min": 60, "max": 80, "rgba": [255, 255, 0, 255], "rgbaEnd": [249, 202, 0, 255] },
+    { "min": 80, "max": 100, "rgba": [249, 202, 0, 255], "rgbaEnd": [254, 127, 0, 255] },
+    { "min": 100, "max": 150, "rgba": [254, 127, 0, 255], "rgbaEnd": [254, 0, 0, 255] },
+    { "min": 150, "max": 200, "rgba": [254, 0, 0, 255], "rgbaEnd": [127, 0, 0, 255] },
+    { "min": 200, "max": 250, "rgba": [127, 0, 0, 255], "rgbaEnd": [0, 0, 0, 255] },
+    { "min": 250, "max": 100000, "rgba": [0, 0, 0, 255] }
+  ],
+  "mask": {
+    "none": [0, 0, 0, 0],
+    "firework": [32, 96, 176, 255],
+    "hrrr": [208, 88, 48, 255]
+  }
+}

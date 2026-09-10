@@ -1,0 +1,51 @@
+{
+  "version": 8,
+  "bounds": { "west": -145, "south": 10, "east": -45, "north": 72 },
+  "displayBounds": { "west": -170, "south": 10, "east": -45, "north": 84 },
+  "monitorRegions": [
+    { "west": -180, "south": 10, "east": -45, "north": 84 },
+    { "west": 170, "south": 50, "east": 180, "north": 84 }
+  ],
+  "raster": { "width": 1024, "height": 635 },
+  "detailGrid": {
+    "version": "regional-tiles-4x4-v2",
+    "width": 4093,
+    "height": 2537,
+    "columns": 4,
+    "rows": 4,
+    "tileWidth": 1024,
+    "tileHeight": 635,
+    "sharedBoundaryPixels": 1
+  },
+  "staleAfterHours": {
+    "airnow": 2,
+    "bcair": 2,
+    "sinaica": 2,
+    "aqhi": 2,
+    "wfigs": 6,
+    "cwfis": 6,
+    "firework": 18,
+    "hrrr": 6
+  },
+  "forecastModels": {
+    "best": {
+      "horizonHours": 36,
+      "resolutionKm": null,
+      "ingestMethod": "compose",
+      "publicTextures": true,
+      "coveragePolicy": "land-plus-coastal-water-v1",
+      "coastalBufferKm": 200,
+      "coverageMaskVersion": "natural-earth-ocean-50m-v3"
+    },
+    "hrrr": { "horizonHours": 48, "resolutionKm": 3, "ingestMethod": "nomads-grib2", "publicTextures": false },
+    "firework": { "horizonHours": 72, "resolutionKm": 10, "ingestMethod": "geomet-wcs", "publicTextures": false }
+  },
+  "airIndexSystems": ["us-epa-pm25-aqi", "ca-aqhi"],
+  "assetBudgets": {
+    "rasterBytes": 750000,
+    "jsonBytes": 750000,
+    "monitorJsonBytes": 2097152,
+    "retainedBytes": 419430400,
+    "fieldBytes": 16777216
+  }
+}

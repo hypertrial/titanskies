@@ -1,0 +1,55 @@
+{
+  "name": "titanskies",
+  "version": "0.1.0",
+  "private": false,
+  "license": "MIT",
+  "description": "North American wildfire-smoke forecast, air quality, and reported wildfire explorer.",
+  "engines": {
+    "node": "22.x"
+  },
+  "scripts": {
+    "dev": "node scripts/dev.mjs",
+    "dev:demo": "node scripts/dev.mjs --demo-data",
+    "dev:local-ingest": "node scripts/dev.mjs --local-ingest",
+    "refresh:context": "node scripts/dev.mjs --refresh-once",
+    "build": "next build",
+    "start": "node scripts/run-web.mjs",
+    "ingest": "./scripts/run_python.sh scripts/watch_context.py",
+    "ingest:once": "./scripts/run_python.sh scripts/watch_context.py --once",
+    "lint": "eslint .",
+    "typecheck": "next typegen && tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:e2e": "playwright test --project=chromium && playwright test --project=mobile-webkit",
+    "test:e2e:webkit": "playwright test --project=mobile-webkit",
+    "audit:prod": "npm audit --omit=dev --audit-level=high",
+    "generate:demo": "./scripts/run_python.sh scripts/generate_demo.py",
+    "generate:geo": "./scripts/run_python.sh scripts/generate_geo.py",
+    "benchmark:context": "./scripts/run_python.sh scripts/benchmark_context.py",
+    "benchmark:hrrr": "./scripts/run_python.sh scripts/benchmark_hrrr_ingest.py",
+    "benchmark:frontend": "NEXT_PUBLIC_CONTEXT_URL=/demo/context/latest.json NEXT_PUBLIC_PERF_DIAGNOSTICS=1 npm run build && node scripts/benchmark_frontend.mjs",
+    "benchmark:frontend:run": "node scripts/benchmark_frontend.mjs",
+    "benchmark:frontend:hardware": "NEXT_PUBLIC_CONTEXT_URL=/demo/context/latest.json NEXT_PUBLIC_PERF_DIAGNOSTICS=1 npm run build && node scripts/benchmark_frontend.mjs --require-hardware",
+    "check:public": "./scripts/run_python.sh scripts/check_public_release.py",
+    "verify:release": "./scripts/verify_release.sh"
+  },
+  "dependencies": {
+    "@react-three/drei": "^10.7.7",
+    "@react-three/fiber": "^9.4.2",
+    "next": "16.3.4",
+    "react": "^19.2.4",
+    "react-dom": "^19.2.4",
+    "three": "^0.180.0"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.58.2",
+    "@types/node": "^22.19.11",
+    "@types/react": "^19.2.14",
+    "@types/react-dom": "^19.2.3",
+    "@types/three": "^0.180.0",
+    "eslint": "^9.39.2",
+    "eslint-config-next": "16.3.4",
+    "typescript": "^5.9.3",
+    "vitest": "^3.2.4"
+  }
+}

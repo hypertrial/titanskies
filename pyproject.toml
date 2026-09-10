@@ -1,0 +1,53 @@
+[project]
+name = "titanskies"
+version = "0.1.0"
+description = "Self-hosted North American smoke, air-quality, and wildfire data publisher"
+license = "MIT"
+requires-python = ">=3.11"
+dependencies = [
+  "numpy>=2.0,<3",
+  "Pillow>=11.0",
+  "requests>=2.32",
+  "eccodes>=2.43",
+  "eccodeslib==2.48.0.26",
+  "tifffile>=2024.1.0",
+]
+
+[project.optional-dependencies]
+dev = [
+  "mypy>=1.18,<2",
+  "pytest>=8.3",
+]
+
+[tool.mypy]
+python_version = "3.12"
+files = [
+  "ingest/context_types.py",
+  "ingest/context_contracts.py",
+  "ingest/context_sources.py",
+  "ingest/context_forecasts.py",
+  "ingest/context_pipeline.py",
+  "ingest/context_gc.py",
+  "ingest/sources/context_http.py",
+  "ingest/sources/context_raster.py",
+  "ingest/sources/wildfires.py",
+  "ingest/sources/firework.py",
+  "ingest/sources/hrrr.py",
+  "ingest/sources/airnow.py",
+  "ingest/sources/bc_air.py",
+  "ingest/sources/sinaica.py",
+  "ingest/sources/aqhi.py",
+]
+disallow_untyped_defs = true
+check_untyped_defs = true
+no_implicit_optional = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+ignore_missing_imports = true
+follow_imports = "skip"
+show_error_codes = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests/python"]
+pythonpath = ["."]
+addopts = "-q"

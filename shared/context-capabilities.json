@@ -1,0 +1,22 @@
+{
+  "versions": [
+    {
+      "version": 8,
+      "rolloutFlag": null,
+      "rolloutDefault": true,
+      "requiredSources": ["airnow", "bcair", "sinaica", "aqhi", "wfigs", "cwfis", "firework", "hrrr"],
+      "allowedSources": ["airnow", "bcair", "sinaica", "aqhi", "wfigs", "cwfis", "firework", "hrrr"],
+      "outlookHorizonHours": 36,
+      "multiModelForecast": true,
+      "sourceMaskRequired": true,
+      "outlookMetadataRequired": true,
+      "detailTilesRequired": true,
+      "aqhi": true,
+      "canonicalHourlyOutlook": true,
+      "sourceTexturesPublic": false,
+      "paletteVersion": "titanskies-smoke-display-v2",
+      "coverageMaskVersion": "natural-earth-ocean-50m-v3",
+      "detailRasterProcessingVersion": "regional-grid-4093x2537-bilinear-v2"
+    }
+  ]
+}

@@ -1,0 +1,36 @@
+{
+  "schemaVersion": 1,
+  "lastReviewed": "2026-09-10",
+  "assets": [
+    {
+      "patterns": ["public/brand/*.png", "public/pwa-icon-*.png"],
+      "origin": "TitanSkies project artwork",
+      "license": "MIT",
+      "terms": "LICENSE"
+    },
+    {
+      "patterns": ["public/demo/**"],
+      "origin": "TitanSkies deterministic synthetic demo generator",
+      "license": "MIT",
+      "terms": "LICENSE"
+    },
+    {
+      "patterns": ["public/geo/earth-dark-v2.webp", "shared/smoke-coverage-mask-*.png"],
+      "origin": "Derived from Natural Earth public-domain geography",
+      "license": "Public Domain",
+      "terms": "https://www.naturalearthdata.com/about/terms-of-use/"
+    },
+    {
+      "patterns": ["public/geo/north-america-v3.json"],
+      "origin": "Natural Earth geography and Wikidata landmark identifiers",
+      "license": "Public Domain / CC0-1.0",
+      "terms": "https://www.wikidata.org/wiki/Wikidata:Copyright"
+    },
+    {
+      "patterns": ["shared/*.json"],
+      "origin": "TitanSkies project-authored contracts, registries, and palettes",
+      "license": "MIT",
+      "terms": "LICENSE"
+    }
+  ]
+}

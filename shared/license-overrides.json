@@ -1,0 +1,26 @@
+{
+  "schemaVersion": 1,
+  "lastReviewed": "2026-09-10",
+  "packages": {
+    "webgl-constants": {
+      "license": "MIT",
+      "source": "https://github.com/immersive-web/webgl-constants/blob/main/LICENSE"
+    },
+    "eccodeslib": {
+      "license": "Apache-2.0",
+      "source": "https://github.com/ecmwf/eccodes-python/blob/master/LICENSE"
+    },
+    "eckitlib": {
+      "license": "Apache-2.0",
+      "source": "package wheel license file"
+    },
+    "pathspec": {
+      "license": "MPL-2.0",
+      "source": "package wheel license file"
+    },
+    "typing_extensions": {
+      "license": "PSF-2.0",
+      "source": "package wheel license file"
+    }
+  }
+}

@@ -1,0 +1,84 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+          cache: npm
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.8.22"
+          enable-cache: true
+      - run: npm ci
+      - run: uv sync --frozen --all-extras
+      - run: npm run check:public
+      - run: npm run lint
+      - run: npm run typecheck
+      - run: npm test
+      - run: uv run mypy
+      - run: uv run pytest
+      - run: npm run generate:demo
+      - run: test -z "$(git status --porcelain -- public/demo)"
+      - run: npm run build
+      - run: npx playwright install --with-deps chromium webkit
+      - run: npm run test:e2e
+      - run: uv run scripts/license_report.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: license-report
+          path: |
+            artifacts/license-report.json
+            artifacts/THIRD_PARTY_NOTICES.md
+      - run: docker build -t titanskies:ci .
+
+  compose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+      - run: CONTEXT_SOURCE=demo docker compose up -d --build web
+      - name: Confirm clean-volume initializing state
+        run: |
+          for attempt in $(seq 1 20); do
+            code=$(curl -sS -o /tmp/health.json -w '%{http_code}' http://127.0.0.1:8080/api/context-health || true)
+            if [ "$code" = 503 ]; then cat /tmp/health.json; exit 0; fi
+            sleep 2
+          done
+          docker compose logs
+          exit 1
+      - run: CONTEXT_SOURCE=demo docker compose up -d ingest
+      - name: Wait for publication to become usable
+        run: |
+          for attempt in $(seq 1 60); do
+            code=$(curl -sS -o /tmp/health.json -w '%{http_code}' http://127.0.0.1:8080/api/context-health || true)
+            if [ "$code" = 200 ]; then cat /tmp/health.json; exit 0; fi
+            sleep 5
+          done
+          docker compose logs
+          exit 1
+      - run: docker compose restart web ingest
+      - run: curl -fsS --retry 20 --retry-delay 2 http://127.0.0.1:8080/api/healthz
+      - run: curl -fsS --retry 20 --retry-delay 2 http://127.0.0.1:8080/api/context-health
+      - if: always()
+        run: docker compose down -v

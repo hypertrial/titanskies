@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=TitanSkies
+Comment=Local smoke, air-quality, and wildfire explorer
+Exec=xdg-open @URL@
+Icon=titanskies
+Terminal=false
+Categories=Science;Utility;
