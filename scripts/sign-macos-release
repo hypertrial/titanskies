@@ -1,0 +1,60 @@
+#!/bin/sh
+set -eu
+cd "$(dirname "$0")/.."
+
+fail() { printf '%s\n' "$*" >&2; exit 1; }
+
+IDENTITY=${MACOS_DEVELOPER_ID_IDENTITY:-}
+APP=${TITANSKIES_MACOS_APP:-dist/macos/TitanSkies.app}
+DMG=$(ls dist/macos/TitanSkies-*-macos-arm64.dmg 2>/dev/null | head -n 1 || true)
+
+[ "$(uname -s)" = Darwin ] || fail "sign-macos-release requires macOS"
+[ -n "$IDENTITY" ] || fail "MACOS_DEVELOPER_ID_IDENTITY is required; unsigned beta must not claim production signing"
+[ -d "$APP" ] || fail "application bundle missing"
+[ -n "$DMG" ] || fail "DMG missing"
+
+# Sign nested native code inside-out. Do not use codesign --deep for signing.
+python3 - "$APP" "$IDENTITY" <<'PY'
+import subprocess
+import sys
+from pathlib import Path
+
+app = Path(sys.argv[1])
+identity = sys.argv[2]
+entitlements = Path("packaging/macos/entitlements-production.plist")
+
+def macho_files(root: Path) -> list[Path]:
+    files = []
+    if not root.exists():
+        return files
+    for path in root.rglob("*"):
+        if not path.is_file():
+            continue
+        kind = subprocess.run(["file", "-b", str(path)], capture_output=True, text=True).stdout
+        if "Mach-O" in kind:
+            files.append(path)
+    return sorted(files, reverse=True)
+
+for root in (
+    app / "Contents/Resources/Host",
+    app / "Contents/Resources",
+    app / "Contents/Helpers",
+    app / "Contents/Frameworks",
+    app / "Contents/MacOS",
+):
+    for path in macho_files(root):
+        if path.parent.name == "MacOS" and path.name == "TitanSkies":
+            continue
+        subprocess.check_call([
+            "codesign", "--force", "--options", "runtime", "--timestamp",
+            "--entitlements", str(entitlements), "--sign", identity, str(path),
+        ])
+PY
+codesign --force --options runtime --timestamp --entitlements packaging/macos/entitlements-production.plist --sign "$IDENTITY" "$APP"
+codesign --verify --deep --strict "$APP"
+codesign --force --timestamp --sign "$IDENTITY" "$DMG"
+xcrun notarytool submit "$DMG" --wait --keychain-profile "${MACOS_NOTARY_PROFILE:?MACOS_NOTARY_PROFILE is required}"
+xcrun stapler staple "$APP"
+xcrun stapler staple "$DMG"
+spctl --assess --type execute --verbose "$APP"
+printf 'signed, notarized, and stapled %s\n' "$DMG"

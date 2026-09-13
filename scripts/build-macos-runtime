@@ -1,0 +1,120 @@
+#!/bin/sh
+set -eu
+cd "$(dirname "$0")/.."
+ROOT=$(pwd)
+LOCK=packaging/macos/runtime-lock.json
+CACHE="${TITANSKIES_MACOS_RUNTIME_CACHE:-$ROOT/.local/macos-runtime-cache}"
+STAGE="${TITANSKIES_MACOS_RUNTIME_STAGE:-$ROOT/.local/macos-runtime}"
+
+fail() { printf '%s\n' "$*" >&2; exit 1; }
+
+case "$(uname -s)-$(uname -m)" in
+  Darwin-arm64) ;;
+  *) fail "build-macos-runtime requires a Darwin arm64 host" ;;
+esac
+command -v xcodebuild >/dev/null || fail "Xcode command-line tools are required"
+command -v uv >/dev/null || fail "uv is required to install locked Python dependencies"
+command -v python3 >/dev/null || fail "python3 is required to read the runtime lock"
+
+eval "$(python3 - "$LOCK" <<'PY'
+import json, sys
+lock = json.loads(open(sys.argv[1], encoding="utf-8").read())
+node = lock["runtimes"]["node"]
+cpython = lock["runtimes"]["cpython"]
+print(f"NODE_URL={node['url']!r}")
+print(f"NODE_SHA={node['sha256']!r}")
+print(f"PYTHON_URL={cpython['url']!r}")
+print(f"PYTHON_SHA={cpython['sha256']!r}")
+PY
+)"
+
+mkdir -p "$CACHE" "$STAGE"
+download() {
+  url=$1
+  sha=$2
+  dest=$3
+  if [ -f "$dest" ]; then
+    actual=$(shasum -a 256 "$dest" | awk '{print $1}')
+    [ "$actual" = "$sha" ] && return 0
+    rm -f "$dest"
+  fi
+  curl -fsSL "$url" -o "$dest"
+  actual=$(shasum -a 256 "$dest" | awk '{print $1}')
+  [ "$actual" = "$sha" ] || fail "checksum mismatch for $dest"
+}
+
+NODE_TAR="$CACHE/node.tar.gz"
+PYTHON_TAR="$CACHE/cpython.tar.gz"
+download "$NODE_URL" "$NODE_SHA" "$NODE_TAR"
+download "$PYTHON_URL" "$PYTHON_SHA" "$PYTHON_TAR"
+
+rm -rf "$STAGE"
+mkdir -p "$STAGE/node" "$STAGE/python" "$STAGE/runtime"
+tar -xzf "$NODE_TAR" -C "$STAGE"
+node_dir=$(find "$STAGE" -maxdepth 1 -type d -name 'node-v*-darwin-arm64' | head -n 1)
+[ -n "$node_dir" ] || fail "node tarball layout unexpected"
+rm -rf "$STAGE/node"
+mv "$node_dir" "$STAGE/node"
+
+tar -xzf "$PYTHON_TAR" -C "$STAGE"
+python_dir=$(find "$STAGE" -maxdepth 1 -type d -name 'python' | head -n 1)
+[ -n "$python_dir" ] || fail "cpython tarball layout unexpected"
+# python-build-standalone extract is already named python/
+
+PYTHON="$STAGE/python/bin/python3"
+NODE="$STAGE/node/bin/node"
+[ -x "$PYTHON" ] || fail "bundled python3 missing"
+[ -x "$NODE" ] || fail "bundled node missing"
+
+PATH="/usr/bin:/bin" "$NODE" -e "process.exit(process.version.startsWith('v22')?0:1)" || fail "bundled node is not 22.x"
+"$PYTHON" -c "import sys; assert sys.version_info[:2]==(3,12)"
+
+uv export --frozen --no-dev --no-emit-project -o "$STAGE/requirements.txt"
+uv pip install --python "$PYTHON" -r "$STAGE/requirements.txt"
+PATH="/usr/bin:/bin" "$PYTHON" -c "import eccodes, numpy, PIL, tifffile"
+
+npm ci
+npm run build
+mkdir -p "$STAGE/runtime/.next"
+cp -R .next/standalone "$STAGE/runtime/.next/standalone"
+mkdir -p "$STAGE/runtime/.next/standalone/.next"
+cp -R public "$STAGE/runtime/.next/standalone/"
+cp -R .next/static "$STAGE/runtime/.next/standalone/.next/"
+cp -R ingest shared "$STAGE/runtime/"
+mkdir -p "$STAGE/runtime/scripts"
+cp scripts/run-web.mjs scripts/watch_context.py scripts/generate_demo.py "$STAGE/runtime/scripts/"
+cp package.json "$STAGE/runtime/package.json"
+rm -rf "$STAGE/runtime/scripts/__pycache__" "$STAGE/runtime/ingest/__pycache__"
+find "$STAGE/runtime" -name '*.map' -delete
+find "$STAGE" -name '.env' -o -name '.env.*' | while read -r envfile; do
+  case "$envfile" in
+    *.example) ;;
+    *) rm -f "$envfile" ;;
+  esac
+done
+
+python3 - "$STAGE" <<'PY'
+import os, subprocess, sys
+from pathlib import Path
+stage = Path(sys.argv[1])
+forbidden = 0
+for path in stage.rglob("*"):
+    if not path.is_file():
+        continue
+    probe = subprocess.run(["file", "-b", str(path)], capture_output=True, text=True, check=False)
+    text = probe.stdout
+    if "Mach-O" not in text:
+        continue
+    if "x86_64" in text and "arm64" not in text:
+        print(f"intel-only Mach-O: {path}", file=sys.stderr)
+        forbidden += 1
+    libs = subprocess.run(["otool", "-L", str(path)], capture_output=True, text=True, check=False).stdout
+    if "/opt/homebrew/" in libs or "/usr/local/Cellar/" in libs:
+        print(f"homebrew linkage: {path}", file=sys.stderr)
+        forbidden += 1
+if forbidden:
+    raise SystemExit(1)
+print("mach-o inventory passed")
+PY
+
+printf 'macos runtime staged at %s\n' "$STAGE"

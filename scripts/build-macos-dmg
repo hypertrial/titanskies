@@ -1,0 +1,28 @@
+#!/bin/sh
+set -eu
+cd "$(dirname "$0")/.."
+ROOT=$(pwd)
+APP="${TITANSKIES_MACOS_APP:-$ROOT/dist/macos/TitanSkies.app}"
+VERSION=$(python3 -c "import json; print(json.load(open('package.json'))['version'])")
+DIST="$ROOT/dist/macos"
+VOL="TitanSkies $VERSION"
+DMG="$DIST/TitanSkies-$VERSION-macos-arm64.dmg"
+STAGE=$(mktemp -d /tmp/titanskies-dmg.XXXXXX)
+cleanup() { rm -rf "$STAGE"; }
+trap cleanup EXIT
+
+fail() { printf '%s\n' "$*" >&2; exit 1; }
+case "$(uname -s)-$(uname -m)" in
+  Darwin-arm64) ;;
+  *) fail "build-macos-dmg requires a Darwin arm64 host" ;;
+esac
+[ -d "$APP" ] || fail "run scripts/build-macos-app first"
+
+mkdir -p "$DIST"
+cp -R "$APP" "$STAGE/TitanSkies.app"
+ln -s /Applications "$STAGE/Applications"
+cp packaging/macos/UNSIGNED-BETA.txt "$STAGE/README.txt"
+cp LICENSE "$STAGE/LICENSE"
+hdiutil create -volname "$VOL" -srcfolder "$STAGE" -ov -format UDZO "$DMG"
+shasum -a 256 "$DMG" | awk '{print $1}' > "$DMG.sha256"
+printf 'created %s\n' "$DMG"

@@ -7,6 +7,12 @@ export type DeferredInstallPrompt = Event & {
   userChoice: Promise<{ outcome: "accepted" | "dismissed"; platform: string }>;
 };
 
+export const NATIVE_SHELL_UA_TOKEN = "TitanSkiesNative/";
+
+export function isNativeTitanSkiesShell(userAgent: string): boolean {
+  return /(?:^|[ ;])TitanSkiesNative\//.test(userAgent);
+}
+
 export function useExplorerEnvironment(onMotionReduced: () => void) {
   const [mobile, setMobile] = useState(false);
   const [shortLandscape, setShortLandscape] = useState(false);
@@ -43,8 +49,10 @@ export function useExplorerEnvironment(onMotionReduced: () => void) {
   useEffect(() => {
     const displayMode = window.matchMedia("(display-mode: standalone)");
     const navigatorWithStandalone = navigator as Navigator & { standalone?: boolean };
-    const updateStandalone = () => setStandalone(displayMode.matches || navigatorWithStandalone.standalone === true);
+    const nativeShell = isNativeTitanSkiesShell(navigator.userAgent);
+    const updateStandalone = () => setStandalone(displayMode.matches || navigatorWithStandalone.standalone === true || nativeShell);
     const onBeforeInstallPrompt = (event: Event) => {
+      if (nativeShell) return;
       event.preventDefault();
       setInstallPrompt(event as DeferredInstallPrompt);
     };

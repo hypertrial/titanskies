@@ -1,0 +1,50 @@
+#!/bin/sh
+set -eu
+cd "$(dirname "$0")/.."
+
+fail() { printf '%s\n' "$*" >&2; exit 1; }
+
+case "$(uname -s)-$(uname -m)" in
+  Darwin-arm64) ;;
+  *)
+    printf 'verify-macos skipped: Darwin arm64 required (current %s-%s)\n' "$(uname -s)" "$(uname -m)"
+    exit 0
+    ;;
+esac
+
+./scripts/run_python.sh -m pytest tests/python/test_macos_packaging.py -q
+(
+  cd macos/TitanSkies
+  swift build -c debug --arch arm64 --product TitanSkiesCoreCheck
+  swift run --arch arm64 TitanSkiesCoreCheck
+)
+
+if [ -d dist/macos/TitanSkies.app ]; then
+  python3 - <<'PY'
+import subprocess, sys
+from pathlib import Path
+app = Path("dist/macos/TitanSkies.app")
+failures = 0
+for path in app.rglob("*"):
+    if not path.is_file():
+        continue
+    text = subprocess.run(["file", "-b", str(path)], capture_output=True, text=True).stdout
+    if "Mach-O" not in text:
+        continue
+    if "x86_64" in text and "arm64" not in text:
+        print(f"intel-only Mach-O: {path}", file=sys.stderr)
+        failures += 1
+    libs = subprocess.run(["otool", "-L", str(path)], capture_output=True, text=True).stdout
+    if "/opt/homebrew/" in libs or "/usr/local/Cellar/" in libs:
+        print(f"homebrew linkage: {path}", file=sys.stderr)
+        failures += 1
+sys.exit(failures)
+PY
+  codesign --verify --strict dist/macos/TitanSkies.app
+  PYTHONDONTWRITEBYTECODE=1 PATH="/usr/bin:/bin" dist/macos/TitanSkies.app/Contents/Resources/Host/node/bin/node -e "process.exit(process.version.startsWith('v22')?0:1)"
+  PYTHONDONTWRITEBYTECODE=1 PATH="/usr/bin:/bin" dist/macos/TitanSkies.app/Contents/Resources/Host/python/bin/python3 -c "import eccodes, numpy, PIL, tifffile"
+fi
+
+./scripts/macos-host-smoke
+
+printf 'verify-macos passed\n'

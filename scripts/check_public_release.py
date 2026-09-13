@@ -108,7 +108,8 @@ for path in (ROOT / "ingest").rglob("*.py"):
 
 for path in ROOT.rglob("*"):
     if not path.is_file() or any(part in {
-        ".git", ".venv", "node_modules", ".next", "public", "tests", "artifacts", "test-results", "playwright-report"
+        ".git", ".venv", "node_modules", ".next", "public", "tests", "artifacts", "test-results", "playwright-report",
+        ".local", "dist", ".build", ".build-icon", ".swiftpm",
     } for part in path.parts):
         continue
     relative = path.relative_to(ROOT).as_posix()

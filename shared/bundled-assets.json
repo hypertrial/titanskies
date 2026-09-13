@@ -1,10 +1,16 @@
 {
   "schemaVersion": 1,
-  "lastReviewed": "2026-09-10",
+  "lastReviewed": "2026-09-13",
   "assets": [
     {
-      "patterns": ["public/brand/*.png", "public/pwa-icon-*.png"],
+      "patterns": ["public/brand/*.png", "public/pwa-icon-*.png", "app/icon.png", "app/apple-icon.png", "app/opengraph-image.png"],
       "origin": "TitanSkies project artwork",
+      "license": "MIT",
+      "terms": "LICENSE"
+    },
+    {
+      "patterns": ["packaging/macos/UNSIGNED-BETA.txt"],
+      "origin": "TitanSkies unsigned-beta install guidance",
       "license": "MIT",
       "terms": "LICENSE"
     },

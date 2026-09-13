@@ -4,4 +4,4 @@ Report a suspected vulnerability privately through GitHub's **Security → Repor
 
 Supported security fixes target the latest tagged release and `main`. TitanSkies binds to `127.0.0.1` by default. If you expose it to a LAN, place it behind an operator-managed TLS reverse proxy, restrict network access, and keep the data directory read-only for the web process.
 
-Never put `AIRNOW_API_KEY` or other credentials in `NEXT_PUBLIC_*` variables, images, logs, or published data. The read-only HTTP application has no ingest or administrative endpoint.
+Never put `AIRNOW_API_KEY` or other credentials in `NEXT_PUBLIC_*` variables, images, logs, or published data. The read-only HTTP application has no ingest or administrative endpoint. The macOS unsigned beta is ad-hoc signed only; do not treat Gatekeeper warnings as notarized trust until `scripts/sign-macos-release` has stapled a Developer ID build.

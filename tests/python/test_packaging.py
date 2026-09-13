@@ -619,6 +619,9 @@ def test_license_report_includes_every_locked_python_variant(tmp_path: Path) -> 
     for name in ("package-lock.json", "uv.lock"):
         shutil.copy2(ROOT / name, tmp_path / name)
     shutil.copytree(ROOT / "shared", tmp_path / "shared")
+    packaging = tmp_path / "packaging/macos"
+    packaging.mkdir(parents=True)
+    shutil.copy2(ROOT / "packaging/macos/runtime-lock.json", packaging / "runtime-lock.json")
     scripts = tmp_path / "scripts"
     scripts.mkdir()
     shutil.copy2(ROOT / "scripts/license_report.py", scripts / "license_report.py")
