@@ -50,14 +50,10 @@ public struct EnvFile: Equatable, Sendable {
         }
         let data = next["TITANSKIES_DATA_DIR"] ?? paths.data.path
         let cache = next["TITANSKIES_CACHE_DIR"] ?? paths.cache.path
-        _ = try PathPolicy.rejectUnsafe(data, app: paths.app, home: paths.home)
-        _ = try PathPolicy.rejectUnsafe(cache, app: paths.app, home: paths.home)
-        if FileManager.default.fileExists(atPath: data) {
-            let attrs = try FileManager.default.attributesOfItem(atPath: data)
-            if attrs[.type] as? FileAttributeType == .typeSymbolicLink {
-                throw TitanSkiesError.unsafePath("data path must not be a symlink")
-            }
-        }
+        let dataURL = try PathPolicy.rejectUnsafe(data, app: paths.app, home: paths.home)
+        let cacheURL = try PathPolicy.rejectUnsafe(cache, app: paths.app, home: paths.home)
+        try PathPolicy.rejectSymlink(dataURL, label: "data")
+        try PathPolicy.rejectSymlink(cacheURL, label: "cache")
         next["CONTEXT_SOURCE"] = source
         next["TITANSKIES_BIND_ADDR"] = TitanSkiesIdentity.bindAddress
         next["TITANSKIES_PORT"] = String(TitanSkiesIdentity.port)

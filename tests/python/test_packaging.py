@@ -648,7 +648,7 @@ def test_public_release_check_scans_all_runtime_hosts(tmp_path: Path) -> None:
     shutil.copy2(ROOT / "scripts/check_public_release.py", root / "scripts/check_public_release.py")
     shutil.copytree(ROOT / "shared", root / "shared")
     shutil.copytree(ROOT / "ingest", root / "ingest")
-    shutil.copytree(ROOT / ".github", root / ".github")
+    assert not (ROOT / ".github").exists()
     shutil.copy2(ROOT / "Dockerfile", root / "Dockerfile")
     check = [sys.executable, str(root / "scripts/check_public_release.py")]
     assert subprocess.run(check, cwd=root, capture_output=True, text=True).returncode == 0

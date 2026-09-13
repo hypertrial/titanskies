@@ -454,6 +454,11 @@ def test_env_files_are_parsed_not_sourced_by_launchers() -> None:
     assert "/bin/bash" not in env_file
     assert "Process(" not in env_file
     assert "EnvFile.parse" in env_file
+    assert "rejectSymlink" in env_file
+    assert 'label: "data"' in env_file
+    assert 'label: "cache"' in env_file
+    assert "typeSymbolicLink" not in env_file
+    assert "isSymbolicLink" in (ROOT / "macos/TitanSkies/Sources/TitanSkiesCore/Paths.swift").read_text(encoding="utf-8")
     assert "webEnvironment()" in launcher
     assert "ingestEnvironment()" in launcher
     assert 'merged.removeValue(forKey: "AIRNOW_API_KEY")' in launcher

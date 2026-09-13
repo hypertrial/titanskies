@@ -86,4 +86,11 @@ public enum PathPolicy {
         }
         return url
     }
+
+    public static func rejectSymlink(_ url: URL, label: String) throws {
+        let values = try? url.resourceValues(forKeys: [.isSymbolicLinkKey])
+        if values?.isSymbolicLink == true {
+            throw TitanSkiesError.unsafePath("\(label) path must not be a symlink")
+        }
+    }
 }

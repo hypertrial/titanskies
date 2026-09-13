@@ -29,6 +29,24 @@ enum TitanSkiesCoreCheck {
         let mode = try FileManager.default.attributesOfItem(atPath: url.path)[.posixPermissions] as? NSNumber
         guard mode?.intValue == 0o600 else { throw CheckError("env mode is \(String(describing: mode))") }
 
+        let app = directory.appendingPathComponent("TitanSkies.app")
+        try FileManager.default.createDirectory(at: app, withIntermediateDirectories: true)
+        let realData = directory.appendingPathComponent("real-data")
+        try FileManager.default.createDirectory(at: realData, withIntermediateDirectories: true)
+        let dataAlias = directory.appendingPathComponent("data-alias")
+        try FileManager.default.createSymbolicLink(at: dataAlias, withDestinationURL: realData)
+        let checkPaths = TitanSkiesPaths(home: directory, app: app)
+        do {
+            _ = try EnvFile(values: ["TITANSKIES_DATA_DIR": dataAlias.path]).validated(paths: checkPaths)
+            throw CheckError("data symlink should be rejected")
+        } catch TitanSkiesError.unsafePath { }
+        let cacheAlias = directory.appendingPathComponent("cache-alias")
+        try FileManager.default.createSymbolicLink(at: cacheAlias, withDestinationURL: realData)
+        do {
+            _ = try EnvFile(values: ["TITANSKIES_CACHE_DIR": cacheAlias.path]).validated(paths: checkPaths)
+            throw CheckError("cache symlink should be rejected")
+        } catch TitanSkiesError.unsafePath { }
+
         guard NavigationPolicy.decide(url: URL(string: "http://127.0.0.1:8080/data")!) == .allow else { throw CheckError("loopback should allow") }
         guard NavigationPolicy.decide(url: URL(string: "https://www.airnow.gov/")!) == .openInBrowser else { throw CheckError("https should open") }
         guard NavigationPolicy.decide(url: URL(string: "file:///etc/passwd")!) == .reject else { throw CheckError("file should reject") }
