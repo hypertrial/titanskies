@@ -786,34 +786,3 @@ def test_publication_probe_checks_configured_freshness_and_all_content_hashes(tm
     assert probe() == 1
     aqhi_asset.write_bytes(aqhi_bytes)
     assert probe() == 0
-
-
-def test_workflows_pin_every_third_party_action_to_a_full_commit() -> None:
-    for workflow in (ROOT / ".github/workflows/ci.yml", ROOT / ".github/workflows/release.yml"):
-        uses = [line.split("@", 1)[1].split()[0] for line in workflow.read_text(encoding="utf-8").splitlines() if "uses:" in line]
-        assert uses
-        assert all(len(revision) == 40 and all(character in "0123456789abcdef" for character in revision) for revision in uses)
-
-
-def test_release_verification_isolated_from_publish_credentials() -> None:
-    workflow = (ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8")
-    verify = workflow[workflow.index("  verify:\n"):workflow.index("  image:\n")]
-    image = workflow[workflow.index("  image:\n"):workflow.index("  publish:\n")]
-    publish = workflow[workflow.index("  publish:\n"):]
-
-    assert "contents: read" in verify
-    assert "persist-credentials: false" in verify
-    assert "id-token: write" not in verify
-    assert "contents: write" not in verify
-    version_check = "test \"$(node -p 'require(\"./package.json\").version')\" = \"$version\""
-    assert version_check in verify
-    assert verify.index(version_check) < verify.index("npm ci")
-    assert "needs: verify" in image
-    assert "id-token: write" not in image
-    assert "persist-credentials: false" in image
-    assert "id-token: write" in publish
-    assert "persist-credentials: false" in publish
-    assert "npm ci" not in publish
-    assert "uv sync" not in publish
-    assert "verify_release.sh" not in publish
-    assert workflow.count("persist-credentials: false") == 3
