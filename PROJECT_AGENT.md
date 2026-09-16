@@ -39,5 +39,6 @@ Additional completion evidence named by native CI, recorded on the ticket when
 run: `npm run check:public`, `uv run mypy`, `uv run pytest`, Playwright e2e,
 docker image build, and compose smoke. `npm run verify:release` remains the
 public-release gate. `check:public` allows committed `.pad.toml` (workspace slug
-only) and still rejects a `.pad/` directory. Darwin arm64 Mac packaging uses
-`scripts/verify-macos` and is not required on Linux.
+only) and the canonical `.pad/universal.lock.json`; it rejects all other `.pad/`
+metadata. Darwin arm64 Mac packaging uses `scripts/verify-macos` and is not
+required on Linux.
