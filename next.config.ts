@@ -4,7 +4,7 @@ const nextConfig: NextConfig = {
   reactStrictMode: true,
   agentRules: false,
   poweredByHeader: false,
-  output: "standalone",
+  output: process.env.VERCEL ? undefined : "standalone",
   distDir: process.env.NEXT_DIST_DIR ?? ".next",
   env: {
     NEXT_PUBLIC_PERF_DIAGNOSTICS: process.env.NEXT_PUBLIC_PERF_DIAGNOSTICS ?? "0",
