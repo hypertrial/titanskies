@@ -19,10 +19,15 @@ esac
 [ -d "$APP" ] || fail "run scripts/build-macos-app first"
 
 mkdir -p "$DIST"
-cp -R "$APP" "$STAGE/TitanSkies.app"
+ditto "$APP" "$STAGE/TitanSkies.app"
 ln -s /Applications "$STAGE/Applications"
-cp packaging/macos/UNSIGNED-BETA.txt "$STAGE/README.txt"
+if [ -f "$APP/Contents/Resources/UNSIGNED-BETA.txt" ]; then
+  cp packaging/macos/UNSIGNED-BETA.txt "$STAGE/README.txt"
+fi
 cp LICENSE "$STAGE/LICENSE"
 hdiutil create -volname "$VOL" -srcfolder "$STAGE" -ov -format UDZO "$DMG"
-shasum -a 256 "$DMG" | awk '{print $1}' > "$DMG.sha256"
+rm -f "$DMG.sha256"
+if [ -f "$APP/Contents/Resources/UNSIGNED-BETA.txt" ]; then
+  (cd "$DIST" && shasum -a 256 "$(basename "$DMG")" > "$(basename "$DMG").sha256")
+fi
 printf 'created %s\n' "$DMG"

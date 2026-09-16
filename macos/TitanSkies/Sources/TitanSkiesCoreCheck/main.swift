@@ -74,13 +74,13 @@ enum TitanSkiesCoreCheck {
         guard canonical.contains("https://example.invalid/TitanSkies.dmg") else { throw CheckError("canonical JSON escaped slashes") }
         guard !canonical.contains("\\/") else { throw CheckError("canonical JSON must not escape slashes") }
         do {
-            try manifest.validate(currentVersion: "0.1.0", channel: "unsigned-beta")
-            throw CheckError("old version should be rejected")
+            _ = try manifest.availability(currentVersion: "0.1.0", channel: "unsigned-beta")
+            throw CheckError("invalid signature should be rejected before version comparison")
         } catch TitanSkiesError.updateRejected { }
         var intel = try UpdateManifest.parse(Data(json.replacingOccurrences(of: "arm64", with: "x86_64").utf8))
         intel.architecture = "x86_64"
         do {
-            try intel.validate(currentVersion: "0.0.1", channel: "unsigned-beta")
+            _ = try intel.availability(currentVersion: "0.0.1", channel: "unsigned-beta")
             throw CheckError("intel architecture should be rejected")
         } catch TitanSkiesError.updateRejected { }
 

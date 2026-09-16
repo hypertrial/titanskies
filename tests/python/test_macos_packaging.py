@@ -67,6 +67,8 @@ def test_runtime_lock_pins_darwin_arm64_downloads() -> None:
     assert lock["platform"] == "macos-arm64"
     assert lock["minimumOS"] == "13.0"
     assert lock["bundleIdentifier"] == BUNDLE_ID
+    assert lock["channel"] == "unsigned-beta"
+    assert lock["updateManifestURL"] == "https://github.com/hypertrial/titanskies/releases/latest/download/macos-arm64-update.json"
     assert key["publicKeyHex"] == lock["updatePublicKeyHex"]
     for name, item in lock["runtimes"].items():
         assert item["arch"] == "arm64"
@@ -562,8 +564,11 @@ def test_production_signing_fails_closed_without_developer_id() -> None:
     for line in text.splitlines():
         if "codesign" in line and "--sign" in line:
             assert "--deep" not in line
-    assert "MACOS_NOTARY_PROFILE:?" in text
-    assert "Contents/Resources/Host" in text
+    assert 'NOTARY_PROFILE=${MACOS_NOTARY_PROFILE:-}' in text
+    assert "./scripts/macos-release-preflight" in text
+    assert "gitleaks git --redact" in text
+    assert '--log-opts="--all"' in text
+    assert 'app.rglob("*")' in text
     result = subprocess.run(
         ["sh", str(script)],
         cwd=ROOT,
@@ -572,8 +577,63 @@ def test_production_signing_fails_closed_without_developer_id() -> None:
         env={**os.environ, "MACOS_DEVELOPER_ID_IDENTITY": "", "MACOS_NOTARY_PROFILE": ""},
     )
     assert result.returncode != 0
-    assert "requires macOS" in result.stderr or "MACOS_DEVELOPER_ID_IDENTITY is required" in result.stderr
+    assert any(
+        message in result.stderr
+        for message in (
+            "require a Darwin arm64 host",
+            "select a full Xcode",
+            "MACOS_DEVELOPER_ID_IDENTITY is required",
+        )
+    )
     assert "signed, notarized" not in result.stdout
+
+
+def test_production_build_inputs_and_release_sequence_fail_closed(tmp_path: Path) -> None:
+    build = (ROOT / "scripts/build-macos-app").read_text(encoding="utf-8")
+    release = (ROOT / "scripts/sign-macos-release").read_text(encoding="utf-8")
+    signer = (ROOT / "scripts/macos_update_sign.py").read_text(encoding="utf-8")
+    assert "MACOS_BUILD_NUMBER is required for production builds" in build
+    assert "production builds require a clean source tree" in build
+    assert 'payload["channel"] = sys.argv[2]' in build
+    assert 'payload["appVersion"] = sys.argv[3]' in build
+    assert 'payload["buildNumber"] = int(sys.argv[4])' in build
+    assert 'payload["sourceRevision"] = sys.argv[5]' in build
+
+    runtime = tmp_path / "runtime"
+    node = runtime / "node/bin/node"
+    node.parent.mkdir(parents=True)
+    node.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    node.chmod(0o755)
+    result = subprocess.run(
+        ["sh", str(ROOT / "scripts/build-macos-app")],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        env={
+            **os.environ,
+            "TITANSKIES_MACOS_RUNTIME_STAGE": str(runtime),
+            "TITANSKIES_MACOS_CHANNEL": "production",
+            "MACOS_BUILD_NUMBER": "",
+        },
+    )
+    assert result.returncode != 0
+    assert "MACOS_BUILD_NUMBER is required" in result.stderr
+
+    assert release.index('xcrun stapler staple "$APP"') < release.index("./scripts/build-macos-dmg")
+    assert release.index("./scripts/build-macos-dmg") < release.index('codesign --force --timestamp --sign "$IDENTITY" "$DMG"')
+    assert release.index('xcrun stapler staple "$DMG"') < release.index("shasum -a 256")
+    assert release.index("shasum -a 256") < release.index("scripts/macos_update_sign.py")
+    assert 'diff -qr "$APP" "$MOUNTED_APP"' in release
+    assert "os.replace(temporary, path)" in signer
+
+
+def test_gitleaks_allowlist_is_limited_to_public_test_fixture() -> None:
+    config = (ROOT / ".gitleaks.toml").read_text(encoding="utf-8")
+    assert 'rules = ["private-key"]' in config
+    assert "tests/python/fixtures/macos-update-test-ed25519" in config
+    assert config.count("[[allowlists]]") == 1
+    assert "scripts/" not in config
+    assert "packaging/" not in config
 
 
 def test_linux_installer_tar_omits_swift_build_products(tmp_path: Path) -> None:
@@ -625,7 +685,11 @@ def test_beta_and_production_labels_match_smappservice_sources() -> None:
     assert "StartInterval" not in beta_ingest
     assert "KeepAlive" not in beta_ingest
     assert "Channel.load(fromApp:" in app_model
-    assert "Channel.load(fromApp:" in (ROOT / "macos/TitanSkies/Sources/TitanSkiesUpdater/main.swift").read_text(encoding="utf-8")
+    update = (ROOT / "macos/TitanSkies/Sources/TitanSkiesCore/Update.swift").read_text(encoding="utf-8")
+    assert "Channel.load(fromApp:" in update[update.index("public struct LiveUpdateServiceManager") :]
+    launcher = (ROOT / "macos/TitanSkies/Sources/TitanSkiesCore/RuntimeLauncher.swift").read_text(encoding="utf-8")
+    assert "process.standardOutput = logHandle" in launcher
+    assert "process.standardError = logHandle" in launcher
 
 
 def test_verified_update_downloads_hash_mounts_and_launches_helper() -> None:
@@ -643,8 +707,11 @@ def test_verified_update_downloads_hash_mounts_and_launches_helper() -> None:
     assert "UpdateApplier().stage" in app_model
     assert "launchHelper" in app_model
     assert "Install verified update" in settings
-    assert updater.index("StagedApp.validate(stagedURL)") < updater.index("moveItem(at: stagedURL, to: liveURL)")
-    assert updater.index("StagedApp.validate(rollbackApp)") < updater.index("moveItem(at: rollbackApp, to: liveURL)")
+    assert "UpdateTransaction" in updater
+    transaction = update[update.index("public struct UpdateTransaction") :]
+    assert transaction.index("validator.validate(stagedApp)") < transaction.index("moveItem(at: stagedApp, to: liveApp)")
+    assert transaction.index("validator.validate(rollbackApp)") < transaction.index("moveItem(at: rollbackApp, to: liveApp)")
+    assert transaction.index("services.start(app: liveApp)") < transaction.index("relauncher.relaunch(liveApp)")
     assert "never execute the rollback app from Application Support" in (
         ROOT / "macos/TitanSkies/Sources/TitanSkiesCore/Services.swift"
     ).read_text(encoding="utf-8")
@@ -736,10 +803,11 @@ def test_uninstall_confirms_inactivity_before_purge_or_trash() -> None:
     is_loaded = launchd[launchd.index("public func isLoaded") : launchd.index("public enum LaunchdPlist")]
     assert '"print"' in is_loaded
     assert "result?.succeeded == true" in is_loaded
+    assert "stdout.contains(executable.path)" in is_loaded
     app_model = (ROOT / "macos/TitanSkies/Sources/TitanSkies/AppModel.swift").read_text(encoding="utf-8")
     model_uninstall = app_model[app_model.index("func uninstall(purge: Bool)") : app_model.index("func checkUpdates()")]
     assert model_uninstall.index("unregisterProductionLoginItems") < model_uninstall.index("AppUninstaller")
-    assert model_uninstall.index("channelIsProduction") < model_uninstall.index("unregisterProductionLoginItems")
+    assert model_uninstall.index("channel == .production") < model_uninstall.index("unregisterProductionLoginItems")
     unregister = app_model[app_model.index("private func unregisterProductionLoginItems") :]
     assert "com.hypertrial.titanskies.web.plist" in unregister
     assert "com.hypertrial.titanskies.ingest.plist" in unregister
@@ -751,10 +819,9 @@ def test_production_smappservice_registers_from_start_not_beta() -> None:
     app_model = (ROOT / "macos/TitanSkies/Sources/TitanSkies/AppModel.swift").read_text(encoding="utf-8")
     start = app_model[app_model.index("func start() async") : app_model.index("func saveSettings()")]
     assert start.index("isUntrustedInstallSource") < start.index("registerProductionIfSigned")
-    assert start.index("channelIsProduction") < start.index("registerProductionIfSigned")
+    assert start.index("channel == .production") < start.index("registerProductionIfSigned")
     assert start.index("registerProductionIfSigned") < start.index("services.start()")
-    register = app_model[app_model.index("func registerProductionIfSigned()") : app_model.index("private func channelIsProduction")]
-    assert register.index("channelIsProduction") < register.index("migrateBetaToProduction")
+    register = app_model[app_model.index("func registerProductionIfSigned()") : app_model.index("private func beginNativeOperation")]
     assert register.index("migrateBetaToProduction") < register.index("web.register()")
     assert register.index("migrateBetaToProduction") < register.index("ingest.register()")
     assert 'SMAppService.agent(plistName: "com.hypertrial.titanskies.web.plist")' in register
@@ -763,10 +830,6 @@ def test_production_smappservice_registers_from_start_not_beta() -> None:
     assert "beta.ingest.plist" not in register
     assert ".requiresApproval" in register
     assert "openSystemSettingsLoginItems" in register
-    channel = app_model[app_model.index("private func channelIsProduction") : app_model.index("private func currentVersion")]
-    assert '["channel"]' in channel
-    assert "loadRuntimeLock" in channel
-    assert "Channel.production.rawValue" in channel
     assert "Channel.load(fromApp:" in app_model
     services = (ROOT / "macos/TitanSkies/Sources/TitanSkiesCore/Services.swift").read_text(encoding="utf-8")
     service_start = services[services.index("public func start()") : services.index("public func stop()")]
@@ -816,14 +879,18 @@ def test_update_apply_path_hashes_before_mount_and_sandboxes_helper() -> None:
     assert apply.index("pendingUpdate") < apply.index("UpdateApplier().stage")
     assert apply.index("UpdateApplier().stage") < apply.index("launchHelper")
     assert "NSApp.terminate" in apply
-    install = settings[settings.index("Install verified update") : settings.index("Unsigned beta")]
-    assert ".disabled(model.pendingUpdate == nil)" in install
-    assert updater.index('throw TitanSkiesError.updateRejected("updater requires --live --staged --rollback")') < updater.index(
-        "StagedApp.validate(stagedURL)"
+    install = settings[settings.index("Install verified update") : settings.index("Section(\"Uninstall\")")]
+    assert "model.pendingUpdate == nil || model.nativeOperationInProgress" in install
+    assert 'throw TitanSkiesError.updateRejected("updater requires --live --staged --rollback")' in updater
+    assert "live app must be ~/Applications/TitanSkies.app" in updater
+    assert "staged app must be ~/Applications/TitanSkies.staged.app" in updater
+    assert "rollback directory must be TitanSkies-owned Application Support" in updater
+    transaction = update[update.index("public struct UpdateTransaction") :]
+    assert transaction.index("live and staged apps must stay outside Application Support") < transaction.index(
+        "validator.validate(stagedApp)"
     )
-    assert updater.index("live app must not be the rollback area") < updater.index("StagedApp.validate(stagedURL)")
-    assert updater.index("StagedApp.validate(stagedURL)") < updater.index("moveItem(at: stagedURL, to: liveURL)")
-    assert updater.index("StagedApp.validate(rollbackApp)") < updater.index("moveItem(at: rollbackApp, to: liveURL)")
+    assert transaction.index("validator.validate(stagedApp)") < transaction.index("moveItem(at: stagedApp, to: liveApp)")
+    assert transaction.index("validator.validate(rollbackApp)") < transaction.index("moveItem(at: rollbackApp, to: liveApp)")
 
 
 def test_macos_host_smoke_skips_off_darwin_arm64_and_gates_host_checks(tmp_path: Path) -> None:
@@ -863,5 +930,3 @@ def test_macos_host_smoke_skips_off_darwin_arm64_and_gates_host_checks(tmp_path:
     assert "passed" not in result.stdout
     assert "codesign" not in result.stdout
     assert "hdiutil" not in result.stdout
-
-

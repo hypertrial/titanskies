@@ -13,68 +13,49 @@ enum TitanSkiesUpdaterMain {
     }
 
     static func run(arguments: [String]) throws {
-        var live: String?
-        var staged: String?
-        var rollback: String?
+        var values: [String: String] = [:]
         var index = 0
         while index < arguments.count {
-            switch arguments[index] {
-            case "--live":
-                live = arguments[index + 1]
-                index += 2
-            case "--staged":
-                staged = arguments[index + 1]
-                index += 2
-            case "--rollback":
-                rollback = arguments[index + 1]
-                index += 2
-            default:
-                index += 1
+            let option = arguments[index]
+            guard ["--live", "--staged", "--rollback"].contains(option) else {
+                throw TitanSkiesError.updateRejected("unknown updater argument \(option)")
             }
+            guard index + 1 < arguments.count else {
+                throw TitanSkiesError.updateRejected("missing value for \(option)")
+            }
+            values[option] = arguments[index + 1]
+            index += 2
         }
-        guard let live, let staged, let rollback else {
+        guard let live = values["--live"], let staged = values["--staged"], let rollback = values["--rollback"] else {
             throw TitanSkiesError.updateRejected("updater requires --live --staged --rollback")
         }
+
         let home = FileManager.default.homeDirectoryForCurrentUser
         let liveURL = URL(fileURLWithPath: live)
         let stagedURL = URL(fileURLWithPath: staged)
-        let rollbackDir = URL(fileURLWithPath: rollback)
-        let rollbackApp = rollbackDir.appendingPathComponent("TitanSkies.app")
-        if liveURL.path.contains("Application Support") {
-            throw TitanSkiesError.unsafePath("live app must not be the rollback area")
-        }
-        try StagedApp.validate(stagedURL)
+        let rollbackDirectory = URL(fileURLWithPath: rollback)
         let paths = TitanSkiesPaths(home: home, app: liveURL)
-        let services = ServiceManager(paths: paths, channel: Channel.load(fromApp: liveURL))
-        try services.stop()
-        try FileManager.default.createDirectory(at: rollbackDir, withIntermediateDirectories: true)
-        if FileManager.default.fileExists(atPath: rollbackApp.path) {
-            try FileManager.default.removeItem(at: rollbackApp)
+        guard liveURL.standardizedFileURL == paths.installedApp.standardizedFileURL else {
+            throw TitanSkiesError.unsafePath("live app must be ~/Applications/TitanSkies.app")
         }
-        if FileManager.default.fileExists(atPath: liveURL.path) {
-            try FileManager.default.moveItem(at: liveURL, to: rollbackApp)
+        let expectedStaged = paths.applications.appendingPathComponent("TitanSkies.staged.app")
+        guard stagedURL.standardizedFileURL == expectedStaged.standardizedFileURL else {
+            throw TitanSkiesError.unsafePath("staged app must be ~/Applications/TitanSkies.staged.app")
         }
-        do {
-            try FileManager.default.moveItem(at: stagedURL, to: liveURL)
-            let installed = TitanSkiesPaths(home: home, app: liveURL)
-            let next = ServiceManager(paths: installed, channel: Channel.load(fromApp: liveURL))
-            try next.start()
-        } catch {
-            try services.stop()
-            if FileManager.default.fileExists(atPath: liveURL.path) {
-                let failed = rollbackDir.appendingPathComponent("TitanSkies.failed.app")
-                if FileManager.default.fileExists(atPath: failed.path) {
-                    try FileManager.default.removeItem(at: failed)
-                }
-                try FileManager.default.moveItem(at: liveURL, to: failed)
-            }
-            try StagedApp.validate(rollbackApp)
-            if FileManager.default.fileExists(atPath: rollbackApp.path) {
-                try FileManager.default.moveItem(at: rollbackApp, to: liveURL)
-            }
-            let restored = ServiceManager(paths: TitanSkiesPaths(home: home, app: liveURL), channel: Channel.load(fromApp: liveURL))
-            try restored.start()
-            throw TitanSkiesError.rollbackFailed(error.localizedDescription)
+        guard rollbackDirectory.standardizedFileURL == paths.rollback.standardizedFileURL else {
+            throw TitanSkiesError.unsafePath("rollback directory must be TitanSkies-owned Application Support")
+        }
+        try PathPolicy.rejectSymlink(paths.applications, label: "Applications")
+        try PathPolicy.rejectSymlink(paths.support, label: "support")
+        try PathPolicy.rejectSymlink(rollbackDirectory, label: "rollback")
+        let result = try UpdateTransaction(services: LiveUpdateServiceManager(home: home)).run(
+            liveApp: liveURL,
+            stagedApp: stagedURL,
+            rollbackDirectory: rollbackDirectory,
+            rollbackStatusURL: paths.updateStatus
+        )
+        if case .rolledBack(let reason) = result {
+            throw TitanSkiesError.rollbackFailed("previous version restored after update failed: \(reason)")
         }
     }
 }

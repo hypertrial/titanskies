@@ -21,6 +21,8 @@ ROOT = Path(__file__).resolve().parents[1]
 PACKAGING = ROOT / "packaging" / "macos"
 RUNTIME_LOCK_PATH = PACKAGING / "runtime-lock.json"
 UPDATE_KEY_PATH = PACKAGING / "update-public-key.json"
+UPDATE_KEY_ID = "titanskies-macos-ed25519-1"
+UPDATE_MANIFEST_URL = "https://github.com/hypertrial/titanskies/releases/latest/download/macos-arm64-update.json"
 
 BUNDLE_ID = "com.hypertrial.titanskies"
 BETA_WEB_LABEL = "com.hypertrial.titanskies.beta.web"
@@ -72,6 +74,12 @@ def validate_runtime_lock(payload: Mapping[str, Any]) -> None:
         raise PackagingError("runtime-lock minimumOS must be 13.0")
     if payload.get("bundleIdentifier") != BUNDLE_ID:
         raise PackagingError("runtime-lock bundleIdentifier mismatch")
+    if payload.get("channel") not in {"unsigned-beta", "production"}:
+        raise PackagingError("runtime-lock channel is invalid")
+    if payload.get("updateKeyId") != UPDATE_KEY_ID:
+        raise PackagingError("runtime-lock update key id mismatch")
+    if payload.get("updateManifestURL") != UPDATE_MANIFEST_URL:
+        raise PackagingError("runtime-lock update manifest URL mismatch")
     public_key = payload.get("updatePublicKeyHex")
     if not isinstance(public_key, str) or not re.fullmatch(r"[0-9a-f]{64}", public_key):
         raise PackagingError("runtime-lock update public key must be 32-byte hex")

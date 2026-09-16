@@ -46,8 +46,17 @@ public enum RuntimeLauncher {
         process.executableURL = executable
         process.arguments = arguments
         process.environment = environment(kind: kind, env: env, home: paths.home.path)
+        let log = kind == .web ? paths.webLog : paths.ingestLog
+        if !FileManager.default.fileExists(atPath: log.path) {
+            FileManager.default.createFile(atPath: log.path, contents: nil)
+        }
+        let logHandle = try FileHandle(forWritingTo: log)
+        try logHandle.seekToEnd()
+        process.standardOutput = logHandle
+        process.standardError = logHandle
         try process.run()
         process.waitUntilExit()
+        try? logHandle.close()
         exit(process.terminationStatus)
     }
 }

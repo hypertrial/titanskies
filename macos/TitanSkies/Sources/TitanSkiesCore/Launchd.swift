@@ -71,9 +71,11 @@ public struct LaunchdClient: Sendable {
         }
     }
 
-    public func isLoaded(_ label: String) -> Bool {
+    public func isLoaded(_ label: String, executable: URL? = nil) -> Bool {
         let result = try? runner.run("/bin/launchctl", ["print", "\(domain)/\(label)"], environment: nil)
-        return result?.succeeded == true
+        guard result?.succeeded == true else { return false }
+        guard let executable else { return true }
+        return result?.stdout.contains(executable.path) == true
     }
 }
 

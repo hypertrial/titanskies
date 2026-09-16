@@ -6,6 +6,9 @@ STAGE="${TITANSKIES_MACOS_RUNTIME_STAGE:-$ROOT/.local/macos-runtime}"
 OUT="${TITANSKIES_MACOS_APP:-$ROOT/dist/macos/TitanSkies.app}"
 SWIFT_ROOT="$ROOT/macos/TitanSkies"
 VERSION=$(python3 -c "import json; print(json.load(open('package.json'))['version'])")
+CHANNEL=${TITANSKIES_MACOS_CHANNEL:-unsigned-beta}
+BUILD_NUMBER=${MACOS_BUILD_NUMBER:-1}
+SOURCE_REVISION=$(git rev-parse HEAD)
 
 fail() { printf '%s\n' "$*" >&2; exit 1; }
 case "$(uname -s)-$(uname -m)" in
@@ -14,6 +17,18 @@ case "$(uname -s)-$(uname -m)" in
 esac
 [ -x "$STAGE/node/bin/node" ] || fail "run scripts/build-macos-runtime first"
 command -v swift >/dev/null || fail "swift is required"
+case "$CHANNEL" in
+  unsigned-beta) ;;
+  production)
+    [ -n "${MACOS_BUILD_NUMBER:-}" ] || fail "MACOS_BUILD_NUMBER is required for production builds"
+    [ -z "$(git status --porcelain --untracked-files=all)" ] || fail "production builds require a clean source tree"
+    ./scripts/macos-release-preflight --build-only
+    ;;
+  *) fail "TITANSKIES_MACOS_CHANNEL must be unsigned-beta or production" ;;
+esac
+case "$BUILD_NUMBER" in
+  ''|*[!0-9]*|0) fail "MACOS_BUILD_NUMBER must be a positive integer" ;;
+esac
 
 mkdir -p "$SWIFT_ROOT/.build-icon/AppIcon.iconset"
 SRC="$ROOT/app/icon.png"
@@ -46,10 +61,24 @@ cp "$BIN/TitanSkiesIngest" "$OUT/Contents/MacOS/TitanSkiesIngest"
 cp "$BIN/TitanSkiesUpdater" "$OUT/Contents/MacOS/TitanSkiesUpdater"
 cp packaging/macos/Info.plist "$OUT/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $VERSION" "$OUT/Contents/Info.plist"
-/usr/libexec/PlistBuddy -c "Set :CFBundleVersion 1" "$OUT/Contents/Info.plist"
+/usr/libexec/PlistBuddy -c "Set :CFBundleVersion $BUILD_NUMBER" "$OUT/Contents/Info.plist"
 cp "$SWIFT_ROOT/.build-icon/AppIcon.icns" "$OUT/Contents/Resources/AppIcon.icns"
-cp packaging/macos/UNSIGNED-BETA.txt "$OUT/Contents/Resources/UNSIGNED-BETA.txt"
 cp packaging/macos/runtime-lock.json "$OUT/Contents/Resources/runtime-lock.json"
+python3 - "$OUT/Contents/Resources/runtime-lock.json" "$CHANNEL" "$VERSION" "$BUILD_NUMBER" "$SOURCE_REVISION" <<'PY'
+import json, sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+payload = json.loads(path.read_text(encoding="utf-8"))
+payload["channel"] = sys.argv[2]
+payload["appVersion"] = sys.argv[3]
+payload["buildNumber"] = int(sys.argv[4])
+payload["sourceRevision"] = sys.argv[5]
+path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+PY
+if [ "$CHANNEL" = unsigned-beta ]; then
+  cp packaging/macos/UNSIGNED-BETA.txt "$OUT/Contents/Resources/UNSIGNED-BETA.txt"
+fi
 cp packaging/macos/update-public-key.json "$OUT/Contents/Resources/update-public-key.json"
 cp packaging/macos/launchd/com.hypertrial.titanskies.web.plist "$OUT/Contents/Library/LaunchAgents/"
 cp packaging/macos/launchd/com.hypertrial.titanskies.ingest.plist "$OUT/Contents/Library/LaunchAgents/"

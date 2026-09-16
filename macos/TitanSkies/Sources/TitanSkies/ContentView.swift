@@ -9,6 +9,13 @@ struct ContentView: View {
             if model.unsignedWarning && model.lifecycle != .needsInstall {
                 UnsignedBanner()
             }
+            if model.updateMessage.contains("rolled back") {
+                Text(model.updateMessage)
+                    .font(.callout)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(8)
+                    .background(Color.orange.opacity(0.2))
+            }
             switch model.lifecycle {
             case .needsInstall:
                 InstallPrompt()
@@ -27,6 +34,8 @@ struct ContentView: View {
                 StatusPanel(title: "Stopped", detail: "Background services are stopped. Publications and settings are preserved.")
             case .portConflict:
                 StatusPanel(title: "Port 8080 is in use", detail: "TitanSkies will not load a foreign listener. Stop the other process or choose Repair after freeing the port.")
+            case .approvalRequired:
+                StatusPanel(title: "Background access required", detail: "Allow TitanSkies background items in System Settings, then choose Start again.")
             case .repairRequired:
                 StatusPanel(title: "Repair required", detail: "The local services could not be registered. Use Settings → Repair.")
             case .rolledBack:
@@ -66,6 +75,7 @@ private struct InstallPrompt: View {
                 .frame(maxWidth: 480)
             Button("Install for Me") { model.installForMe() }
                 .keyboardShortcut(.defaultAction)
+                .disabled(model.nativeOperationInProgress)
         }
         .padding(32)
         .frame(maxWidth: .infinity, maxHeight: .infinity)

@@ -57,9 +57,9 @@ Use `./scripts/uninstall-user --purge` only when you also want the default confi
 
 ## macOS application (Apple Silicon)
 
-Requirements: macOS 13 or later on Apple Silicon. The unsigned beta DMG bundles Node 22 and CPython 3.12; no host runtime or administrator password is required.
+Requirements: macOS 13 or later on Apple Silicon. The production DMG bundles Node 22 and CPython 3.12; no host runtime or administrator password is required.
 
-Open the DMG, choose **Install for Me**, and let TitanSkies copy itself to `~/Applications/TitanSkies.app`. Gatekeeper warnings are expected until the later Developer ID / notarized channel. Closing the window leaves `127.0.0.1:8080` and the 15-minute ingest job running. See [`docs/MACOS.md`](docs/MACOS.md).
+Open the Developer ID signed and notarized DMG, choose **Install for Me**, and let TitanSkies copy itself to `~/Applications/TitanSkies.app`. Closing the window leaves `127.0.0.1:8080` and the 15-minute ingest job running. See [`docs/MACOS.md`](docs/MACOS.md); release operators use [`docs/MACOS_RELEASE.md`](docs/MACOS_RELEASE.md).
 
 
 ## Source development

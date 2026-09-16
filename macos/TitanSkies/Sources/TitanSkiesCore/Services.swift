@@ -5,17 +5,20 @@ public struct ServiceManager: Sendable {
     public let launchd: LaunchdClient
     public let health: ServiceHealth
     public let channel: Channel
+    public let portOccupier: @Sendable () -> String?
 
     public init(
         paths: TitanSkiesPaths,
         launchd: LaunchdClient = LaunchdClient(),
         health: ServiceHealth = ServiceHealth(),
-        channel: Channel = .unsignedBeta
+        channel: Channel = .unsignedBeta,
+        portOccupier: @escaping @Sendable () -> String? = { PortProbe.occupier() }
     ) {
         self.paths = paths
         self.launchd = launchd
         self.health = health
         self.channel = channel
+        self.portOccupier = portOccupier
     }
 
     public func writeBetaAgents() throws {
@@ -32,14 +35,21 @@ public struct ServiceManager: Sendable {
         }
         try LogRotation.rotate(at: paths.webLog)
         try LogRotation.rotate(at: paths.ingestLog)
-        if PortProbe.occupier() != nil {
+        if portOccupier() != nil {
+            let webLabel = channel == .unsignedBeta
+                ? TitanSkiesIdentity.betaWebLabel
+                : TitanSkiesIdentity.productionWebLabel
+            guard launchd.isLoaded(webLabel, executable: paths.webLauncher) else {
+                throw TitanSkiesError.foreignService
+            }
             if let snapshot = try? health.healthz(), snapshot.serviceIdentity {
-                try launchd.kickstart(
-                    channel == .unsignedBeta ? TitanSkiesIdentity.betaIngestLabel : TitanSkiesIdentity.productionIngestLabel
-                )
+                let ingestLabel = channel == .unsignedBeta
+                    ? TitanSkiesIdentity.betaIngestLabel
+                    : TitanSkiesIdentity.productionIngestLabel
+                try launchd.kickstart(ingestLabel)
                 return
             }
-            throw TitanSkiesError.portConflict(TitanSkiesIdentity.port)
+            throw TitanSkiesError.foreignService
         }
         if channel == .unsignedBeta {
             try writeBetaAgents()

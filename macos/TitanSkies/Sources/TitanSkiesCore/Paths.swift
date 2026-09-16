@@ -23,6 +23,7 @@ public struct TitanSkiesPaths: Sendable {
     public var env: URL { config.appendingPathComponent("env") }
     public var data: URL { support.appendingPathComponent("data") }
     public var rollback: URL { support.appendingPathComponent("rollback") }
+    public var updateStatus: URL { support.appendingPathComponent("update-status.txt") }
     public var cache: URL { home.appendingPathComponent("Library/Caches/TitanSkies") }
     public var logs: URL { home.appendingPathComponent("Library/Logs/TitanSkies") }
     public var webLog: URL { logs.appendingPathComponent("web.log") }

@@ -38,5 +38,9 @@ let package = Package(
             name: "TitanSkiesCoreCheck",
             dependencies: ["TitanSkiesCore"]
         ),
+        .testTarget(
+            name: "TitanSkiesCoreTests",
+            dependencies: ["TitanSkiesCore"]
+        ),
     ]
 )

@@ -12,37 +12,164 @@ case "$(uname -s)-$(uname -m)" in
     ;;
 esac
 
+./scripts/macos-release-preflight --build-only
 ./scripts/run_python.sh -m pytest tests/python/test_macos_packaging.py -q
 (
   cd macos/TitanSkies
+  swift test --arch arm64
   swift build -c debug --arch arm64 --product TitanSkiesCoreCheck
   swift run --arch arm64 TitanSkiesCoreCheck
 )
 
-if [ -d dist/macos/TitanSkies.app ]; then
-  python3 - <<'PY'
+APP=dist/macos/TitanSkies.app
+if [ -d "$APP" ]; then
+  VERSION=$(python3 -c "import json; print(json.load(open('package.json'))['version'])")
+  CHANNEL=$(python3 - "$APP" "$VERSION" <<'PY'
+import json, plistlib, sys
+from pathlib import Path
+
+app = Path(sys.argv[1])
+version = sys.argv[2]
+lock = json.loads((app / "Contents/Resources/runtime-lock.json").read_text(encoding="utf-8"))
+info = plistlib.loads((app / "Contents/Info.plist").read_bytes())
+if info.get("CFBundleShortVersionString") != version:
+    raise SystemExit("bundle version does not match package version")
+build = str(info.get("CFBundleVersion", ""))
+if not build.isdigit() or int(build) < 1:
+    raise SystemExit("bundle build number must be positive")
+if lock.get("appVersion") != version or lock.get("buildNumber") != int(build):
+    raise SystemExit("runtime-lock version/build metadata mismatch")
+channel = lock.get("channel")
+if channel not in {"unsigned-beta", "production"}:
+    raise SystemExit("runtime-lock channel is invalid")
+marker = app / "Contents/Resources/UNSIGNED-BETA.txt"
+if (channel == "production") == marker.exists():
+    raise SystemExit("unsigned marker does not match the application channel")
+print(channel)
+PY
+  )
+
+  python3 - "$APP" <<'PY'
 import subprocess, sys
 from pathlib import Path
-app = Path("dist/macos/TitanSkies.app")
-failures = 0
-for path in app.rglob("*"):
+
+failures = []
+for path in Path(sys.argv[1]).rglob("*"):
     if not path.is_file():
         continue
-    text = subprocess.run(["file", "-b", str(path)], capture_output=True, text=True).stdout
+    text = subprocess.run(["file", "-b", str(path)], capture_output=True, text=True, check=True).stdout
     if "Mach-O" not in text:
         continue
-    if "x86_64" in text and "arm64" not in text:
-        print(f"intel-only Mach-O: {path}", file=sys.stderr)
-        failures += 1
-    libs = subprocess.run(["otool", "-L", str(path)], capture_output=True, text=True).stdout
+    if "arm64" not in text or "x86_64" in text:
+        failures.append(f"not arm64-only: {path}")
+    libs = subprocess.run(["otool", "-L", str(path)], capture_output=True, text=True, check=True).stdout
     if "/opt/homebrew/" in libs or "/usr/local/Cellar/" in libs:
-        print(f"homebrew linkage: {path}", file=sys.stderr)
-        failures += 1
-sys.exit(failures)
+        failures.append(f"Homebrew linkage: {path}")
+if failures:
+    raise SystemExit("\n".join(failures))
 PY
-  codesign --verify --strict dist/macos/TitanSkies.app
-  PYTHONDONTWRITEBYTECODE=1 PATH="/usr/bin:/bin" dist/macos/TitanSkies.app/Contents/Resources/Host/node/bin/node -e "process.exit(process.version.startsWith('v22')?0:1)"
-  PYTHONDONTWRITEBYTECODE=1 PATH="/usr/bin:/bin" dist/macos/TitanSkies.app/Contents/Resources/Host/python/bin/python3 -c "import eccodes, numpy, PIL, tifffile"
+  codesign --verify --strict --deep --verbose=2 "$APP"
+  PYTHONDONTWRITEBYTECODE=1 PATH="/usr/bin:/bin" "$APP/Contents/Resources/Host/node/bin/node" \
+    -e "process.exit(process.version.startsWith('v22')?0:1)"
+  PYTHONDONTWRITEBYTECODE=1 PATH="/usr/bin:/bin" "$APP/Contents/Resources/Host/python/bin/python3" \
+    -c "import eccodes, numpy, PIL, tifffile"
+
+  if [ "$CHANNEL" = production ]; then
+    [ -n "${MACOS_TEAM_ID:-}" ] || fail "MACOS_TEAM_ID is required to verify a production app"
+    SIGN_INFO=$(codesign -dv --verbose=4 "$APP" 2>&1)
+    printf '%s\n' "$SIGN_INFO" | grep -F "Authority=Developer ID Application:" >/dev/null \
+      || fail "production app is not Developer ID signed"
+    printf '%s\n' "$SIGN_INFO" | grep -F "TeamIdentifier=$MACOS_TEAM_ID" >/dev/null \
+      || fail "production app Team ID mismatch"
+    printf '%s\n' "$SIGN_INFO" | grep -E 'flags=.*runtime' >/dev/null \
+      || fail "production app is missing Hardened Runtime"
+    python3 - "$APP" "$MACOS_TEAM_ID" <<'PY'
+import plistlib, subprocess, sys
+from pathlib import Path
+
+failures = []
+entitlements = subprocess.run(
+    ["codesign", "-d", "--entitlements", ":-", sys.argv[1]], capture_output=True
+)
+if entitlements.returncode:
+    failures.append("unable to read production entitlements")
+else:
+    payload = plistlib.loads(entitlements.stdout)
+    if payload.get("com.apple.security.cs.allow-jit") is not True:
+        failures.append("production app is missing its JIT entitlement")
+    if payload.get("com.apple.security.cs.disable-library-validation") is not False:
+        failures.append("production app must enforce library validation")
+for path in Path(sys.argv[1]).rglob("*"):
+    if not path.is_file():
+        continue
+    kind = subprocess.run(["file", "-b", str(path)], capture_output=True, text=True, check=True).stdout
+    if "Mach-O" not in kind:
+        continue
+    details = subprocess.run(["codesign", "-dv", "--verbose=4", str(path)], capture_output=True, text=True).stderr
+    if "Authority=Developer ID Application:" not in details:
+        failures.append(f"nested code is not Developer ID signed: {path}")
+    if f"TeamIdentifier={sys.argv[2]}" not in details:
+        failures.append(f"nested code Team ID mismatch: {path}")
+    if "runtime" not in next((line for line in details.splitlines() if line.startswith("CodeDirectory")), ""):
+        failures.append(f"nested code is missing Hardened Runtime: {path}")
+if failures:
+    raise SystemExit("\n".join(failures))
+PY
+    spctl --assess --type execute --verbose=2 "$APP"
+    xcrun stapler validate "$APP"
+
+    DMG="dist/macos/TitanSkies-$VERSION-macos-arm64.dmg"
+    CHECKSUM="$DMG.sha256"
+    MANIFEST=dist/macos/macos-arm64-update.json
+    [ -f "$DMG" ] || fail "production DMG is missing"
+    [ -f "$CHECKSUM" ] || fail "production checksum is missing"
+    [ -f "$MANIFEST" ] || fail "production update manifest is missing"
+    codesign --verify --strict --verbose=2 "$DMG"
+    spctl --assess --type open --context context:primary-signature --verbose=2 "$DMG"
+    xcrun stapler validate "$DMG"
+    hdiutil verify "$DMG"
+    (cd "$(dirname "$DMG")" && shasum -a 256 -c "$(basename "$CHECKSUM")")
+
+    MOUNT=$(mktemp -d /tmp/titanskies-verify-mount.XXXXXX)
+    cleanup_mount() { hdiutil detach "$MOUNT" -force >/dev/null 2>&1 || true; rm -rf "$MOUNT"; }
+    trap cleanup_mount EXIT HUP INT TERM
+    hdiutil attach -readonly -nobrowse -mountpoint "$MOUNT" "$DMG" >/dev/null
+    MOUNTED_APP="$MOUNT/TitanSkies.app"
+    codesign --verify --strict --deep --verbose=2 "$MOUNTED_APP"
+    spctl --assess --type execute --verbose=2 "$MOUNTED_APP"
+    xcrun stapler validate "$MOUNTED_APP"
+    diff -qr "$APP" "$MOUNTED_APP"
+    python3 - "$MOUNTED_APP" "$VERSION" <<'PY'
+import json, plistlib, sys
+from pathlib import Path
+app = Path(sys.argv[1])
+lock = json.loads((app / "Contents/Resources/runtime-lock.json").read_text(encoding="utf-8"))
+info = plistlib.loads((app / "Contents/Info.plist").read_bytes())
+if lock.get("channel") != "production" or lock.get("appVersion") != sys.argv[2]:
+    raise SystemExit("mounted app production metadata mismatch")
+if int(lock.get("buildNumber", 0)) != int(info.get("CFBundleVersion", 0)):
+    raise SystemExit("mounted app build metadata mismatch")
+PY
+    cleanup_mount
+    trap - EXIT HUP INT TERM
+
+    ./scripts/run_python.sh - "$MANIFEST" "$DMG" "$VERSION" <<'PY'
+import json, sys
+from pathlib import Path
+from macos.packaging_lib import sha256_file, validate_update_manifest
+
+manifest_path, dmg_path, version = map(Path, sys.argv[1:])
+payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+validate_update_manifest(payload, current_version="0.0.0", channel="production")
+if payload["version"] != str(version):
+    raise SystemExit("manifest version mismatch")
+if payload["sha256"] != sha256_file(dmg_path):
+    raise SystemExit("manifest-to-DMG hash mismatch")
+tag = f"/releases/download/v{version}/"
+if tag not in payload["dmgURL"] or payload["releaseNotesURL"].rstrip("/").split("/")[-1] != f"v{version}":
+    raise SystemExit("manifest URLs are not immutable version URLs")
+PY
+  fi
 fi
 
 ./scripts/macos-host-smoke

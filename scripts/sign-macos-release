@@ -4,57 +4,226 @@ cd "$(dirname "$0")/.."
 
 fail() { printf '%s\n' "$*" >&2; exit 1; }
 
+VERSION=$(python3 -c "import json; print(json.load(open('package.json'))['version'])")
+BUILD_NUMBER=${MACOS_BUILD_NUMBER:-}
 IDENTITY=${MACOS_DEVELOPER_ID_IDENTITY:-}
+TEAM_ID=${MACOS_TEAM_ID:-}
+NOTARY_PROFILE=${MACOS_NOTARY_PROFILE:-}
+PRIVATE_KEY=${MACOS_UPDATE_PRIVATE_KEY:-}
 APP=${TITANSKIES_MACOS_APP:-dist/macos/TitanSkies.app}
-DMG=$(ls dist/macos/TitanSkies-*-macos-arm64.dmg 2>/dev/null | head -n 1 || true)
+DIST=dist/macos
+DMG="$DIST/TitanSkies-$VERSION-macos-arm64.dmg"
+CHECKSUM="$DMG.sha256"
+MANIFEST="$DIST/macos-arm64-update.json"
+TAG="v$VERSION"
+WORK=$(mktemp -d /tmp/titanskies-release.XXXXXX)
+MOUNT="$WORK/mount"
+ATTACHED=0
+cleanup() {
+  if [ "$ATTACHED" -eq 1 ]; then hdiutil detach "$MOUNT" -force >/dev/null 2>&1 || true; fi
+  rm -rf "$WORK"
+}
+trap cleanup EXIT HUP INT TERM
 
-[ "$(uname -s)" = Darwin ] || fail "sign-macos-release requires macOS"
+./scripts/macos-release-preflight
 [ -n "$IDENTITY" ] || fail "MACOS_DEVELOPER_ID_IDENTITY is required; unsigned beta must not claim production signing"
+[ -n "$TEAM_ID" ] || fail "MACOS_TEAM_ID is required"
+[ -n "$NOTARY_PROFILE" ] || fail "MACOS_NOTARY_PROFILE is required"
+[ -r "$PRIVATE_KEY" ] || fail "MACOS_UPDATE_PRIVATE_KEY must name a readable Ed25519 private key"
+case "$BUILD_NUMBER" in
+  ''|*[!0-9]*|0) fail "MACOS_BUILD_NUMBER must be a positive integer" ;;
+esac
+[ -z "$(git status --porcelain --untracked-files=all)" ] || fail "release signing requires a clean source tree"
+[ "$(git cat-file -t "refs/tags/$TAG" 2>/dev/null || true)" = tag ] || fail "$TAG must be an annotated tag"
+[ "$(git rev-list -n 1 "$TAG")" = "$(git rev-parse HEAD)" ] || fail "HEAD must be the exact $TAG commit"
 [ -d "$APP" ] || fail "application bundle missing"
-[ -n "$DMG" ] || fail "DMG missing"
+command -v gitleaks >/dev/null 2>&1 || fail "gitleaks is required"
+gitleaks git --redact --log-opts="--all"
 
-# Sign nested native code inside-out. Do not use codesign --deep for signing.
+python3 - "$APP" "$VERSION" "$BUILD_NUMBER" "$(git rev-parse HEAD)" <<'PY'
+import json, plistlib, sys
+from pathlib import Path
+
+app = Path(sys.argv[1])
+lock = json.loads((app / "Contents/Resources/runtime-lock.json").read_text(encoding="utf-8"))
+info = plistlib.loads((app / "Contents/Info.plist").read_bytes())
+expected = {
+    "channel": "production",
+    "appVersion": sys.argv[2],
+    "buildNumber": int(sys.argv[3]),
+    "sourceRevision": sys.argv[4],
+}
+for key, value in expected.items():
+    if lock.get(key) != value:
+        raise SystemExit(f"production metadata mismatch for {key}")
+if info.get("CFBundleShortVersionString") != sys.argv[2] or str(info.get("CFBundleVersion")) != sys.argv[3]:
+    raise SystemExit("bundle version metadata mismatch")
+if (app / "Contents/Resources/UNSIGNED-BETA.txt").exists():
+    raise SystemExit("production app contains the unsigned-beta marker")
+latest = max(path.stat().st_mtime_ns for path in app.rglob("*") if path.exists())
+if latest <= 0:
+    raise SystemExit("application bundle is stale")
+PY
+
+# Sign every nested Mach-O inside-out, then seal the application bundle.
 python3 - "$APP" "$IDENTITY" <<'PY'
-import subprocess
-import sys
+import subprocess, sys
 from pathlib import Path
 
 app = Path(sys.argv[1])
 identity = sys.argv[2]
 entitlements = Path("packaging/macos/entitlements-production.plist")
-
-def macho_files(root: Path) -> list[Path]:
-    files = []
-    if not root.exists():
-        return files
-    for path in root.rglob("*"):
-        if not path.is_file():
-            continue
-        kind = subprocess.run(["file", "-b", str(path)], capture_output=True, text=True).stdout
-        if "Mach-O" in kind:
-            files.append(path)
-    return sorted(files, reverse=True)
-
-for root in (
-    app / "Contents/Resources/Host",
-    app / "Contents/Resources",
-    app / "Contents/Helpers",
-    app / "Contents/Frameworks",
-    app / "Contents/MacOS",
-):
-    for path in macho_files(root):
-        if path.parent.name == "MacOS" and path.name == "TitanSkies":
-            continue
-        subprocess.check_call([
-            "codesign", "--force", "--options", "runtime", "--timestamp",
-            "--entitlements", str(entitlements), "--sign", identity, str(path),
-        ])
+files = []
+for path in app.rglob("*"):
+    if not path.is_file():
+        continue
+    kind = subprocess.run(["file", "-b", str(path)], capture_output=True, text=True, check=True).stdout
+    if "Mach-O" in kind:
+        files.append(path)
+for path in sorted(files, key=lambda item: (len(item.parts), str(item)), reverse=True):
+    if path == app / "Contents/MacOS/TitanSkies":
+        continue
+    subprocess.check_call([
+        "codesign", "--force", "--options", "runtime", "--timestamp",
+        "--entitlements", str(entitlements), "--sign", identity, str(path),
+    ])
 PY
-codesign --force --options runtime --timestamp --entitlements packaging/macos/entitlements-production.plist --sign "$IDENTITY" "$APP"
-codesign --verify --deep --strict "$APP"
-codesign --force --timestamp --sign "$IDENTITY" "$DMG"
-xcrun notarytool submit "$DMG" --wait --keychain-profile "${MACOS_NOTARY_PROFILE:?MACOS_NOTARY_PROFILE is required}"
+codesign --force --options runtime --timestamp \
+  --entitlements packaging/macos/entitlements-production.plist --sign "$IDENTITY" "$APP"
+codesign --verify --deep --strict --verbose=2 "$APP"
+SIGN_INFO=$(codesign -dv --verbose=4 "$APP" 2>&1)
+printf '%s\n' "$SIGN_INFO" | grep -F "Authority=Developer ID Application:" >/dev/null \
+  || fail "application is not signed by a Developer ID Application authority"
+printf '%s\n' "$SIGN_INFO" | grep -F "TeamIdentifier=$TEAM_ID" >/dev/null \
+  || fail "application Team ID mismatch"
+printf '%s\n' "$SIGN_INFO" | grep -E 'flags=.*runtime' >/dev/null \
+  || fail "application is missing Hardened Runtime"
+codesign -d --entitlements :- "$APP" > "$WORK/app-entitlements.plist" 2>/dev/null
+python3 - "$WORK/app-entitlements.plist" <<'PY'
+import plistlib, sys
+payload = plistlib.loads(open(sys.argv[1], "rb").read())
+if payload.get("com.apple.security.cs.allow-jit") is not True:
+    raise SystemExit("production app is missing its JIT entitlement")
+if payload.get("com.apple.security.cs.disable-library-validation") is not False:
+    raise SystemExit("production app must enforce library validation")
+PY
+
+python3 - "$APP" "$TEAM_ID" <<'PY'
+import subprocess, sys
+from pathlib import Path
+
+failures = []
+for path in Path(sys.argv[1]).rglob("*"):
+    if not path.is_file():
+        continue
+    kind = subprocess.run(["file", "-b", str(path)], capture_output=True, text=True, check=True).stdout
+    if "Mach-O" not in kind:
+        continue
+    verification = subprocess.run(["codesign", "--verify", "--strict", str(path)], capture_output=True, text=True)
+    if verification.returncode:
+        failures.append(f"invalid nested signature: {path}")
+    details = subprocess.run(["codesign", "-dv", "--verbose=4", str(path)], capture_output=True, text=True).stderr
+    if "Authority=Developer ID Application:" not in details or f"TeamIdentifier={sys.argv[2]}" not in details:
+        failures.append(f"unexpected nested signing identity: {path}")
+    if "runtime" not in next((line for line in details.splitlines() if line.startswith("CodeDirectory")), ""):
+        failures.append(f"nested code is missing Hardened Runtime: {path}")
+    if "arm64" not in kind or "x86_64" in kind:
+        failures.append(f"not arm64-only: {path}")
+    linked = subprocess.run(["otool", "-L", str(path)], capture_output=True, text=True, check=True).stdout
+    if "/opt/homebrew/" in linked or "/usr/local/Cellar/" in linked:
+        failures.append(f"Homebrew linkage: {path}")
+if failures:
+    raise SystemExit("\n".join(failures))
+PY
+
+APP_ARCHIVE="$WORK/TitanSkies-$VERSION-app.zip"
+ditto -c -k --keepParent "$APP" "$APP_ARCHIVE"
+xcrun notarytool submit "$APP_ARCHIVE" --wait --output-format json \
+  --keychain-profile "$NOTARY_PROFILE" > "$WORK/app-notary.json"
+python3 - "$WORK/app-notary.json" <<'PY'
+import json, sys
+if json.load(open(sys.argv[1], encoding="utf-8")).get("status") != "Accepted":
+    raise SystemExit("application notarization was not accepted")
+PY
 xcrun stapler staple "$APP"
+xcrun stapler validate "$APP"
+spctl --assess --type execute --verbose=2 "$APP"
+
+rm -f "$DMG" "$CHECKSUM" "$MANIFEST"
+TITANSKIES_MACOS_APP="$APP" ./scripts/build-macos-dmg
+python3 - "$APP" "$DMG" <<'PY'
+import sys
+from pathlib import Path
+app, dmg = map(Path, sys.argv[1:])
+newest_app_byte = max(path.stat().st_mtime_ns for path in app.rglob("*") if path.is_file())
+if dmg.stat().st_mtime_ns <= newest_app_byte:
+    raise SystemExit("DMG must be created after the stapled application")
+PY
+codesign --force --timestamp --sign "$IDENTITY" "$DMG"
+codesign --verify --strict --verbose=2 "$DMG"
+xcrun notarytool submit "$DMG" --wait --output-format json \
+  --keychain-profile "$NOTARY_PROFILE" > "$WORK/dmg-notary.json"
+python3 - "$WORK/dmg-notary.json" <<'PY'
+import json, sys
+if json.load(open(sys.argv[1], encoding="utf-8")).get("status") != "Accepted":
+    raise SystemExit("DMG notarization was not accepted")
+PY
 xcrun stapler staple "$DMG"
-spctl --assess --type execute --verbose "$APP"
-printf 'signed, notarized, and stapled %s\n' "$DMG"
+xcrun stapler validate "$DMG"
+hdiutil verify "$DMG"
+spctl --assess --type open --context context:primary-signature --verbose=2 "$DMG"
+
+mkdir -p "$MOUNT"
+hdiutil attach -readonly -nobrowse -mountpoint "$MOUNT" "$DMG" >/dev/null
+ATTACHED=1
+MOUNTED_APP="$MOUNT/TitanSkies.app"
+codesign --verify --deep --strict --verbose=2 "$MOUNTED_APP"
+spctl --assess --type execute --verbose=2 "$MOUNTED_APP"
+xcrun stapler validate "$MOUNTED_APP"
+diff -qr "$APP" "$MOUNTED_APP"
+LIVE_CDHASH=$(codesign -dv --verbose=4 "$APP" 2>&1 | sed -n 's/^CDHash=//p')
+MOUNTED_CDHASH=$(codesign -dv --verbose=4 "$MOUNTED_APP" 2>&1 | sed -n 's/^CDHash=//p')
+[ -n "$LIVE_CDHASH" ] && [ "$LIVE_CDHASH" = "$MOUNTED_CDHASH" ] \
+  || fail "mounted app signature does not match the validated app"
+hdiutil detach "$MOUNT" >/dev/null
+ATTACHED=0
+
+(cd "$DIST" && shasum -a 256 "$(basename "$DMG")" > "$(basename "$CHECKSUM")")
+(cd "$DIST" && shasum -a 256 -c "$(basename "$CHECKSUM")")
+DIGEST=$(awk '{print $1}' "$CHECKSUM")
+python3 - "$WORK/manifest.json" "$VERSION" "$TAG" "$(basename "$DMG")" "$DIGEST" <<'PY'
+import json, sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+version, tag, dmg, digest = sys.argv[2:]
+payload = {
+    "version": version,
+    "minimumOS": "13.0",
+    "architecture": "arm64",
+    "channel": "production",
+    "dmgURL": f"https://github.com/hypertrial/titanskies/releases/download/{tag}/{dmg}",
+    "sha256": digest,
+    "releaseNotesURL": f"https://github.com/hypertrial/titanskies/releases/tag/{tag}",
+    "keyId": "titanskies-macos-ed25519-1",
+}
+path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+PY
+python3 scripts/macos_update_sign.py "$WORK/manifest.json" --key "$PRIVATE_KEY" \
+  --current-version 0.0.0 --channel production
+mv "$WORK/manifest.json" "$MANIFEST"
+python3 - "$DMG" "$CHECKSUM" "$MANIFEST" <<'PY'
+import sys
+from pathlib import Path
+dmg, checksum, manifest = map(Path, sys.argv[1:])
+if checksum.stat().st_mtime_ns < dmg.stat().st_mtime_ns:
+    raise SystemExit("checksum must not predate the final stapled DMG")
+if manifest.stat().st_mtime_ns < checksum.stat().st_mtime_ns:
+    raise SystemExit("update manifest must not predate the final checksum")
+PY
+
+./scripts/run_python.sh scripts/generate_sbom.py "$DIST/TitanSkies-$VERSION-sbom.cdx.json"
+cp THIRD_PARTY_NOTICES.md "$DIST/TitanSkies-$VERSION-THIRD_PARTY_NOTICES.md"
+cp "docs/releases/$TAG.md" "$DIST/TitanSkies-$VERSION-release-notes.md"
+
+printf 'signed, notarized, stapled, verified, and manifested %s\n' "$DMG"

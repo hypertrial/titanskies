@@ -1,0 +1,7 @@
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Public Ed25519 private key used only for deterministic update-signature tests"
+rules = ["private-key"]
+paths = ['''^tests/python/fixtures/macos-update-test-ed25519\.pem$''']

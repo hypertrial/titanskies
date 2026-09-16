@@ -36,6 +36,8 @@ public enum Channel: String, Sendable {
     case unsignedBeta = "unsigned-beta"
     case production = "production"
 
+    public var showsUnsignedWarning: Bool { self == .unsignedBeta }
+
     public static func load(fromApp app: URL) -> Channel {
         let lockURL = app.appendingPathComponent("Contents/Resources/runtime-lock.json")
         guard let data = try? Data(contentsOf: lockURL),
@@ -77,6 +79,7 @@ public enum TitanSkiesError: Error, Equatable, LocalizedError {
     case foreignService
     case invalidVersion(String)
     case updateRejected(String)
+    case serviceApprovalRequired
     case launchd(String)
     case missingBundleResource(String)
     case healthCheckFailed(String)
@@ -98,6 +101,8 @@ public enum TitanSkiesError: Error, Equatable, LocalizedError {
             return "Port \(port) is already in use by another process."
         case .foreignService:
             return "A different service is answering on 127.0.0.1:8080."
+        case .serviceApprovalRequired:
+            return "Allow TitanSkies background items in System Settings, then choose Start again."
         }
     }
 }

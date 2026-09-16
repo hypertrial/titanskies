@@ -25,10 +25,16 @@ struct SettingsView: View {
                 Text(model.updateMessage.isEmpty ? "Updates are user-initiated and verified before replacement." : model.updateMessage)
                 Button("Check for update") { model.checkUpdates() }
                 Button("Install verified update") { model.applyPendingUpdate() }
-                    .disabled(model.pendingUpdate == nil)
-                Text("Unsigned beta: trust the published DMG checksum, then this app verifies later manifests and hashes. This is not Gatekeeper/notarization trust.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .disabled(model.pendingUpdate == nil || model.nativeOperationInProgress)
+                if model.channel.showsUnsignedWarning {
+                    Text("Unsigned local build: verify the DMG checksum. This build is not Developer ID signed or notarized.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else {
+                    Text("Production updates require a signed manifest and a matching DMG hash before installation.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
             }
             Section("Uninstall") {
                 Button("Uninstall (keep data)") { model.uninstall(purge: false) }
@@ -37,6 +43,7 @@ struct SettingsView: View {
         }
         .formStyle(.grouped)
         .padding()
+        .disabled(model.nativeOperationInProgress)
         .alert("Delete TitanSkies data?", isPresented: $model.confirmPurge) {
             Button("Cancel", role: .cancel) {}
             Button("Delete default data", role: .destructive) { model.uninstall(purge: true) }
@@ -52,6 +59,7 @@ struct SettingsView: View {
         case .degraded: return "Web service is up; one or more sources are degraded."
         case .stopped: return "Services are stopped."
         case .portConflict: return "Port 8080 is occupied by another process."
+        case .approvalRequired: return "Allow TitanSkies background items in System Settings, then choose Start again."
         case .repairRequired: return "Repair is required."
         case .rolledBack: return "Rolled back to the previous application."
         case .needsInstall: return "Install to ~/Applications before starting services."

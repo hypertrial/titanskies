@@ -1,6 +1,11 @@
 import CryptoKit
 import Foundation
 
+public enum UpdateAvailability: Equatable, Sendable {
+    case upToDate
+    case available(UpdateManifest)
+}
+
 public struct UpdateManifest: Equatable, Sendable {
     public var version: String
     public var minimumOS: String
@@ -77,7 +82,12 @@ public struct UpdateManifest: Equatable, Sendable {
         return try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys, .withoutEscapingSlashes])
     }
 
-    public func validate(currentVersion: String, channel: String, publicKeyHex: String = TitanSkiesIdentity.updatePublicKeyHex) throws {
+    public func availability(
+        currentVersion: String,
+        channel: String,
+        currentOS: String? = nil,
+        publicKeyHex: String = TitanSkiesIdentity.updatePublicKeyHex
+    ) throws -> UpdateAvailability {
         guard architecture == "arm64" else {
             throw TitanSkiesError.updateRejected("update architecture must be arm64")
         }
@@ -91,15 +101,21 @@ public struct UpdateManifest: Equatable, Sendable {
             throw TitanSkiesError.updateRejected("update sha256 is invalid")
         }
         let requiredOS = minimumOS.split(separator: ".").count == 2 ? "\(minimumOS).0" : minimumOS
-        let os = ProcessInfo.processInfo.operatingSystemVersion
-        let currentOS = "\(os.majorVersion).\(os.minorVersion).\(os.patchVersion)"
-        if try SemanticVersion(currentOS) < SemanticVersion(requiredOS) {
+        let installedOS: String
+        if let currentOS {
+            installedOS = currentOS
+        } else {
+            let os = ProcessInfo.processInfo.operatingSystemVersion
+            installedOS = "\(os.majorVersion).\(os.minorVersion).\(os.patchVersion)"
+        }
+        if try SemanticVersion(installedOS) < SemanticVersion(requiredOS) {
             throw TitanSkiesError.updateRejected("update requires a newer macOS")
         }
-        if try SemanticVersion(version) <= SemanticVersion(currentVersion) {
-            throw TitanSkiesError.updateRejected("update version is not newer")
-        }
         try UpdateSigning.verify(message: try canonicalPayload(), signatureHex: signature, publicKeyHex: publicKeyHex)
+        if try SemanticVersion(version) <= SemanticVersion(currentVersion) {
+            return .upToDate
+        }
+        return .available(self)
     }
 }
 
@@ -118,8 +134,13 @@ public enum UpdateSigning {
     }
 
     public static func sha256(of url: URL) throws -> String {
-        let data = try Data(contentsOf: url, options: [.mappedIfSafe])
-        return SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+        let handle = try FileHandle(forReadingFrom: url)
+        defer { try? handle.close() }
+        var digest = SHA256()
+        while let chunk = try handle.read(upToCount: 1_048_576), !chunk.isEmpty {
+            digest.update(data: chunk)
+        }
+        return digest.finalize().map { String(format: "%02x", $0) }.joined()
     }
 
     private static func data(fromHex hex: String) -> Data? {
@@ -180,6 +201,7 @@ public enum StagedApp {
         newerThan currentVersion: String? = nil,
         runner: any ProcessRunning = FoundationProcessRunner()
     ) throws {
+        try PathPolicy.rejectSymlink(app, label: "application")
         let infoURL = app.appendingPathComponent("Contents/Info.plist")
         let data = try Data(contentsOf: infoURL)
         guard let plist = try PropertyListSerialization.propertyList(from: data, options: [], format: nil) as? [String: Any] else {
@@ -197,8 +219,8 @@ public enum StagedApp {
             throw TitanSkiesError.updateRejected("staged app is missing TitanSkies")
         }
         let info = try runner.run("/usr/bin/file", ["-b", executable.path], environment: nil)
-        if info.stdout.contains("x86_64") && !info.stdout.contains("arm64") {
-            throw TitanSkiesError.updateRejected("staged executable must not be intel-only")
+        if info.stdout.contains("x86_64") {
+            throw TitanSkiesError.updateRejected("staged executable must be arm64-only")
         }
         if !info.stdout.contains("arm64") {
             throw TitanSkiesError.updateRejected("staged executable is not arm64")
@@ -207,16 +229,27 @@ public enum StagedApp {
 }
 
 public protocol UpdateDownloading: Sendable {
-    func download(from url: URL, to destination: URL) throws
+    func download(from url: URL, to destination: URL) async throws
 }
 
-public struct FileURLDownloader: UpdateDownloading {
+public struct URLSessionDownloader: UpdateDownloading {
     public init() {}
 
-    public func download(from url: URL, to destination: URL) throws {
-        try FileManager.default.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
-        let data = try Data(contentsOf: url)
-        try data.write(to: destination, options: .atomic)
+    public func download(from url: URL, to destination: URL) async throws {
+        let (temporaryDownload, response) = try await URLSession.shared.download(from: url)
+        guard let response = response as? HTTPURLResponse, (200..<300).contains(response.statusCode) else {
+            throw TitanSkiesError.updateRejected("update download did not return HTTP success")
+        }
+        let manager = FileManager.default
+        let parent = destination.deletingLastPathComponent()
+        try manager.createDirectory(at: parent, withIntermediateDirectories: true)
+        let temporary = parent.appendingPathComponent(".\(destination.lastPathComponent).\(UUID().uuidString)")
+        defer { try? manager.removeItem(at: temporary) }
+        try manager.copyItem(at: temporaryDownload, to: temporary)
+        if manager.fileExists(atPath: destination.path) {
+            try manager.removeItem(at: destination)
+        }
+        try manager.moveItem(at: temporary, to: destination)
     }
 }
 
@@ -224,7 +257,7 @@ public struct UpdateApplier: Sendable {
     public let downloader: any UpdateDownloading
     public let runner: any ProcessRunning
 
-    public init(downloader: any UpdateDownloading = FileURLDownloader(), runner: any ProcessRunning = FoundationProcessRunner()) {
+    public init(downloader: any UpdateDownloading = URLSessionDownloader(), runner: any ProcessRunning = FoundationProcessRunner()) {
         self.downloader = downloader
         self.runner = runner
     }
@@ -236,14 +269,14 @@ public struct UpdateApplier: Sendable {
         }
     }
 
-    public func stage(manifest: UpdateManifest, paths: TitanSkiesPaths, work: URL, currentVersion: String) throws -> URL {
+    public func stage(manifest: UpdateManifest, paths: TitanSkiesPaths, work: URL, currentVersion: String) async throws -> URL {
         guard manifest.dmgURL.scheme == "https" else {
             throw TitanSkiesError.updateRejected("dmg URL must be https")
         }
         try FileManager.default.createDirectory(at: work, withIntermediateDirectories: true)
         try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: work.path)
         let dmg = work.appendingPathComponent("TitanSkies.dmg")
-        try downloader.download(from: manifest.dmgURL, to: dmg)
+        try await downloader.download(from: manifest.dmgURL, to: dmg)
         try verifyDMG(at: dmg, expectedSHA256: manifest.sha256)
         let mount = work.appendingPathComponent("mnt")
         try FileManager.default.createDirectory(at: mount, withIntermediateDirectories: true)
@@ -295,5 +328,141 @@ public struct UpdateApplier: Sendable {
             "HOME": paths.home.path,
         ]
         try process.run()
+    }
+}
+
+public protocol UpdateServiceManaging: Sendable {
+    func stop(app: URL) throws
+    func start(app: URL) throws
+}
+
+public struct LiveUpdateServiceManager: UpdateServiceManaging {
+    public let home: URL
+
+    public init(home: URL) {
+        self.home = home
+    }
+
+    public func stop(app: URL) throws {
+        try ServiceManager(paths: TitanSkiesPaths(home: home, app: app), channel: Channel.load(fromApp: app)).stop()
+    }
+
+    public func start(app: URL) throws {
+        try ServiceManager(paths: TitanSkiesPaths(home: home, app: app), channel: Channel.load(fromApp: app)).start()
+    }
+}
+
+public protocol ApplicationValidating: Sendable {
+    func validate(_ app: URL) throws
+}
+
+public struct StagedApplicationValidator: ApplicationValidating {
+    public init() {}
+
+    public func validate(_ app: URL) throws {
+        try StagedApp.validate(app)
+    }
+}
+
+public protocol ApplicationRelaunching: Sendable {
+    func relaunch(_ app: URL) throws
+}
+
+public struct WorkspaceApplicationRelauncher: ApplicationRelaunching {
+    public let runner: any ProcessRunning
+
+    public init(runner: any ProcessRunning = FoundationProcessRunner()) {
+        self.runner = runner
+    }
+
+    public func relaunch(_ app: URL) throws {
+        if app.path.contains("Application Support") {
+            throw TitanSkiesError.unsafePath("never relaunch an app from Application Support")
+        }
+        let result = try runner.run("/usr/bin/open", ["-n", app.path], environment: ["PATH": "/usr/bin:/bin"])
+        guard result.succeeded else {
+            throw TitanSkiesError.updateRejected(result.stderr.isEmpty ? "unable to relaunch TitanSkies" : result.stderr)
+        }
+    }
+}
+
+public enum UpdateTransactionResult: Equatable, Sendable {
+    case updated
+    case rolledBack(String)
+}
+
+public struct UpdateTransaction: Sendable {
+    public let services: any UpdateServiceManaging
+    public let validator: any ApplicationValidating
+    public let relauncher: any ApplicationRelaunching
+
+    public init(
+        services: any UpdateServiceManaging,
+        validator: any ApplicationValidating = StagedApplicationValidator(),
+        relauncher: any ApplicationRelaunching = WorkspaceApplicationRelauncher()
+    ) {
+        self.services = services
+        self.validator = validator
+        self.relauncher = relauncher
+    }
+
+    public func run(
+        liveApp: URL,
+        stagedApp: URL,
+        rollbackDirectory: URL,
+        rollbackStatusURL: URL? = nil
+    ) throws -> UpdateTransactionResult {
+        guard !liveApp.path.contains("Application Support"), !stagedApp.path.contains("Application Support") else {
+            throw TitanSkiesError.unsafePath("live and staged apps must stay outside Application Support")
+        }
+        try PathPolicy.rejectSymlink(rollbackDirectory, label: "rollback")
+        try validator.validate(liveApp)
+        try validator.validate(stagedApp)
+        let manager = FileManager.default
+        let rollbackApp = rollbackDirectory.appendingPathComponent("TitanSkies.app")
+        try services.stop(app: liveApp)
+        try manager.createDirectory(at: rollbackDirectory, withIntermediateDirectories: true)
+        if manager.fileExists(atPath: rollbackApp.path) {
+            try manager.removeItem(at: rollbackApp)
+        }
+        guard manager.fileExists(atPath: liveApp.path) else {
+            throw TitanSkiesError.updateRejected("live application is missing")
+        }
+        try manager.moveItem(at: liveApp, to: rollbackApp)
+
+        do {
+            try manager.moveItem(at: stagedApp, to: liveApp)
+            try validator.validate(liveApp)
+            try services.start(app: liveApp)
+            try relauncher.relaunch(liveApp)
+            return .updated
+        } catch {
+            let updateFailure = error
+            do {
+                try? services.stop(app: liveApp)
+                if manager.fileExists(atPath: liveApp.path) {
+                    let failed = rollbackDirectory.appendingPathComponent("TitanSkies.failed.app")
+                    if manager.fileExists(atPath: failed.path) {
+                        try manager.removeItem(at: failed)
+                    }
+                    try manager.moveItem(at: liveApp, to: failed)
+                }
+                try validator.validate(rollbackApp)
+                try manager.moveItem(at: rollbackApp, to: liveApp)
+                try validator.validate(liveApp)
+                try services.start(app: liveApp)
+                if let rollbackStatusURL {
+                    let notice = "TitanSkies rolled back to the previous version after an update failed: \(updateFailure.localizedDescription)\n"
+                    try notice.write(to: rollbackStatusURL, atomically: true, encoding: .utf8)
+                    try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: rollbackStatusURL.path)
+                }
+                try relauncher.relaunch(liveApp)
+                return .rolledBack(updateFailure.localizedDescription)
+            } catch {
+                throw TitanSkiesError.rollbackFailed(
+                    "update failed: \(updateFailure.localizedDescription); rollback failed: \(error.localizedDescription)"
+                )
+            }
+        }
     }
 }
