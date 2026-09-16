@@ -84,7 +84,6 @@ class Settings:
     blob_token: str = ""
     blob_store_id: str = ""
     public_blob_base_url: str = ""
-    cron_secret: str = ""
     local_frame_dir: Path = _ROOT / ".local" / "data"
     local_cache_dir: Path = _ROOT / ".local" / "cache"
     data_url_prefix: str = "/data"
@@ -137,7 +136,6 @@ class Settings:
             blob_token=os.environ.get("BLOB_READ_WRITE_TOKEN", ""),
             blob_store_id=os.environ.get("BLOB_STORE_ID", ""),
             public_blob_base_url=os.environ.get("PUBLIC_BLOB_BASE_URL", "").rstrip("/"),
-            cron_secret=os.environ.get("CRON_SECRET", ""),
             local_frame_dir=Path(os.environ.get("TITANSKIES_DATA_DIR") or _ROOT / ".local" / "data"),
             local_cache_dir=Path(os.environ.get("TITANSKIES_CACHE_DIR") or _ROOT / ".local" / "cache"),
             data_url_prefix="/data",

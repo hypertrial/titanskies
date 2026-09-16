@@ -74,7 +74,7 @@ class FrameStore(Protocol):
     def operation_budget(self, seconds: float) -> ContextManager[None]: ...
 
 
-def _expired(payload: dict[str, Any], now: datetime) -> bool:
+def lease_expired(payload: dict[str, Any], now: datetime) -> bool:
     try:
         return datetime.fromisoformat(str(payload["expiresAt"]).replace("Z", "+00:00")) <= now
     except (KeyError, TypeError, ValueError):
@@ -220,7 +220,7 @@ class LocalFrameStore:
                     current = None
                 except json.JSONDecodeError:
                     current = {}
-                if current is not None and not _expired(current, now):
+                if current is not None and not lease_expired(current, now):
                     return None
                 path.write_text(encoded, encoding="utf-8")
                 return IngestLease(pathname, owner)

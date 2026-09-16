@@ -16,7 +16,7 @@ from requests.adapters import HTTPAdapter
 
 from ingest.config import Settings
 from ingest.http import USER_AGENT
-from ingest.local_store import IngestLease, StoragePage, validate_store_path
+from ingest.local_store import IngestLease, StoragePage, lease_expired, validate_store_path
 from ingest.perf import bounded_timeout, current_metrics, record_storage
 
 _PUBLIC_FALLBACK_STATUSES = frozenset({401, 403, 404, 405})
@@ -156,12 +156,6 @@ def _read_limited(response: requests.Response, max_bytes: int) -> bytes:
         chunks.append(chunk)
     return b"".join(chunks)
 
-
-def _expired(payload: dict[str, Any], now: datetime) -> bool:
-    try:
-        return datetime.fromisoformat(str(payload["expiresAt"]).replace("Z", "+00:00")) <= now
-    except (KeyError, TypeError, ValueError):
-        return True
 
 class BlobFrameStore:
     def __init__(self, settings: Settings):
@@ -445,7 +439,7 @@ class BlobFrameStore:
         if current is None:
             return self._create_lease(pathname, payload)
         current_payload, etag = current
-        if not _expired(current_payload, now) or not self._delete_lease(pathname, etag):
+        if not lease_expired(current_payload, now) or not self._delete_lease(pathname, etag):
             return None
         return self._create_lease(pathname, payload)
 
