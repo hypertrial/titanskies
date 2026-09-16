@@ -139,18 +139,6 @@ def _put_monitor_asset(store: FrameStore, name: str, monitors: list[dict[str, An
     return _put_json_asset(store, name, payload, MONITOR_JSON_BUDGET_BYTES)
 
 
-def _put_json_collection(store: FrameStore, name: str, key: str, items: list[dict[str, Any]]) -> str:
-    retained = items
-    while True:
-        try:
-            payload = _json_bytes({key: retained, "count": len(retained), "sourceCount": len(items)})
-            return _put_asset(store, name, payload, "application/json")
-        except ValueError:
-            if not retained:
-                raise
-            retained = retained[: max(0, len(retained) * 3 // 4)]
-
-
 def _asset_path_from_url(url: str) -> str | None:
     if "context/assets/" not in url:
         return None
