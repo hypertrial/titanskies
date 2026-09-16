@@ -36,15 +36,6 @@ for item in uv_lock.get("package", []):
         "version": version,
         "purl": f"pkg:pypi/{quote(name)}@{version}",
     })
-runtime_lock = json.loads((root / "packaging/macos/runtime-lock.json").read_text(encoding="utf-8"))
-for name, item in runtime_lock.get("runtimes", {}).items():
-    version = item.get("version", "unknown")
-    components.append({
-        "type": "library",
-        "name": item.get("name", name),
-        "version": version,
-        "purl": f"pkg:generic/{quote(str(item.get('name', name)))}@{version}",
-    })
 payload = {
     "bomFormat": "CycloneDX",
     "specVersion": "1.5",

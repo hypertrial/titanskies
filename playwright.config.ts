@@ -26,7 +26,10 @@ export default defineConfig({
     timezoneId: "UTC",
   },
   webServer: {
-    command: `exec ./node_modules/.bin/next dev --port ${e2ePort} --hostname 127.0.0.1`,
+    // Next can leave this generated lock behind when Playwright terminates its
+    // managed dev server. Remove it before startup so a previous clean test run
+    // cannot make the next one wait until the web-server timeout.
+    command: `rm -f ${e2eDistDir}/dev/lock && exec ./node_modules/.bin/next dev --port ${e2ePort} --hostname 127.0.0.1`,
     env: {
       NEXT_DIST_DIR: e2eDistDir,
       NEXT_PUBLIC_CONTEXT_URL: "/demo/context/latest.json",

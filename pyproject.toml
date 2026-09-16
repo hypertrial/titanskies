@@ -23,12 +23,18 @@ dev = [
 [tool.mypy]
 python_version = "3.12"
 files = [
+  "api/context.py",
+  "ingest/auth.py",
+  "ingest/blob_store.py",
+  "ingest/config.py",
   "ingest/context_types.py",
   "ingest/context_contracts.py",
   "ingest/context_sources.py",
   "ingest/context_forecasts.py",
   "ingest/context_pipeline.py",
   "ingest/context_gc.py",
+  "ingest/cron.py",
+  "ingest/local_store.py",
   "ingest/sources/context_http.py",
   "ingest/sources/context_raster.py",
   "ingest/sources/wildfires.py",

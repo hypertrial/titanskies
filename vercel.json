@@ -1,0 +1,15 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "crons": [
+    {
+      "path": "/api/context",
+      "schedule": "*/15 * * * *"
+    }
+  ],
+  "functions": {
+    "api/context.py": {
+      "maxDuration": 360,
+      "excludeFiles": "{tests/**,public/**,src/**,app/**,scripts/**,**/*.test.py,**/*.spec.ts,playwright.config.ts,vitest.config.ts}"
+    }
+  }
+}

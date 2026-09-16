@@ -235,7 +235,7 @@ def run_context_ingest(settings: Settings | None = None, now: datetime | None = 
             metrics.log_summary("context", {"ok": True, "mode": manifest["mode"]})
             return result
         except Exception as exc:
-            LOGGER.exception("context ingest failed")
+            LOGGER.error("context ingest failed: %s", redact(str(exc)))
             status = locals().get("previous_status")
             write_context_status(
                 store,

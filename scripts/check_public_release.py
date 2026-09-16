@@ -4,6 +4,7 @@ from __future__ import annotations
 import ast
 import json
 import re
+import subprocess
 import sys
 from pathlib import Path
 from urllib.parse import urlparse
@@ -21,8 +22,21 @@ RETIRED_HOSTS = {
 }
 URL = re.compile(r"https://[^\"'\s)]+")
 ACTION = re.compile(r"^\s*(?:-\s*)?uses:\s*([^\s#]+)", re.MULTILINE)
-RUNTIME_METADATA_URLS = {"https://github.com/hypertrial/titanskies"}
+RUNTIME_METADATA_URLS = {
+    "https://github.com/hypertrial/titanskies",
+    "https://vercel.com/api/blob",
+}
 NETWORK_CLIENT_MODULES = {"aiohttp", "http.client", "httpx", "requests", "urllib.request"}
+VERCEL_ADAPTER_FILES = {
+    "app/api/context-data/route.ts",
+    "app/api/context-health/route.ts",
+    "ingest/auth.py",
+    "ingest/blob_store.py",
+    "ingest/config.py",
+    "scripts/check_public_release.py",
+    "src/server/blobData.ts",
+    "vercel.json",
+}
 
 
 def fail(message: str) -> None:
@@ -75,7 +89,7 @@ for path in runtime_files:
             imported = [alias.name for alias in node.names]
         elif isinstance(node, ast.ImportFrom) and node.module:
             imported = [f"{node.module}.{alias.name}" for alias in node.names]
-        if path != ROOT / "ingest/http.py" and any(
+        if path not in {ROOT / "ingest/http.py", ROOT / "ingest/blob_store.py"} and any(
             name == module or name.startswith(module + ".")
             for name in imported
             for module in NETWORK_CLIENT_MODULES
@@ -106,13 +120,32 @@ for path in (ROOT / "ingest").rglob("*.py"):
         if host in text:
             fail(f"retired data host {host} in {path.relative_to(ROOT)}")
 
-for path in ROOT.rglob("*"):
+try:
+    tracked_output = subprocess.check_output(["git", "ls-files", "-z"], cwd=ROOT, stderr=subprocess.DEVNULL)
+    tracked = set(tracked_output.decode().rstrip("\0").split("\0"))
+    release_output = subprocess.check_output(
+        ["git", "ls-files", "-z", "--cached", "--others", "--exclude-standard"],
+        cwd=ROOT,
+        stderr=subprocess.DEVNULL,
+    )
+    release_files = set(release_output.decode().rstrip("\0").split("\0"))
+except (FileNotFoundError, subprocess.CalledProcessError):
+    tracked = {path.relative_to(ROOT).as_posix() for path in ROOT.rglob("*") if path.is_file()}
+    release_files = tracked
+if any(".vercel" in Path(relative).parts for relative in tracked):
+    fail("Vercel local project state is tracked")
+if any(Path(relative).name.startswith(".env") and Path(relative).name != ".env.example" for relative in tracked):
+    fail("a local environment file is tracked")
+if any(relative.startswith((".local/", "artifacts/", "test-results/", "playwright-report/")) for relative in tracked):
+    fail("generated or fetched deployment data is tracked")
+
+for relative in sorted(release_files):
+    path = ROOT / relative
     if not path.is_file() or any(part in {
         ".git", ".venv", "node_modules", ".next", "public", "tests", "artifacts", "test-results", "playwright-report",
         ".local", "dist", ".build", ".build-icon", ".swiftpm",
     } for part in path.parts):
         continue
-    relative = path.relative_to(ROOT).as_posix()
     if ".test." in path.name:
         continue
     if relative in {"scripts/check_public_release.py", "DATA_SOURCES.md", "PRODUCT.md", "README.md"}:
@@ -122,7 +155,7 @@ for path in ROOT.rglob("*"):
     text = path.read_text(encoding="utf-8", errors="ignore").lower()
     if any(re.search(rf"(?<![a-z0-9]){term}(?![a-z0-9])", text) for term in RETIRED):
         fail(f"retired integration reference in {relative}")
-    if "@vercel/" in text or "vercel-storage.com" in text or "blob_read_write_token" in text:
+    if ("@vercel/" in text or "vercel-storage.com" in text or "blob_read_write_token" in text) and relative not in VERCEL_ADAPTER_FILES:
         fail(f"proprietary deployment reference in {relative}")
 
 pad_directory = ROOT / ".pad"

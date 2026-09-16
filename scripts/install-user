@@ -111,8 +111,7 @@ tar -C "$root" \
   --exclude=.git --exclude='.next*' --exclude=node_modules --exclude=.venv --exclude=.local \
   --exclude='.env*' \
   --exclude=artifacts --exclude=test-results --exclude=playwright-report --exclude=.pytest_cache \
-  --exclude='__pycache__' --exclude=macos/TitanSkies/.build --exclude=macos/TitanSkies/.build-icon \
-  --exclude=macos/TitanSkies/.swiftpm --exclude=dist -cf - . | tar -C "$staging" -xf -
+  --exclude='__pycache__' --exclude=dist -cf - . | tar -C "$staging" -xf -
 (cd "$staging" && npm ci && uv sync --frozen --no-dev && npm run build && \
   cp -R public .next/standalone/ && mkdir -p .next/standalone/.next && cp -R .next/static .next/standalone/.next/)
 same_version_backup=

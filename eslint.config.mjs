@@ -14,5 +14,5 @@ export default defineConfig([
       "react-hooks/set-state-in-effect": "off",
     },
   },
-  globalIgnores([".next/**", ".next-*/**", "node_modules/**", "public/demo/**", "ingest/**", "api/**", "scripts/**", "tests/python/**", "next-env.d.ts", ".local/**", "dist/**", "macos/TitanSkies/.build/**"]),
+  globalIgnores([".next/**", ".next-*/**", "node_modules/**", "public/demo/**", "ingest/**", "api/**", "scripts/**", "tests/python/**", "next-env.d.ts", ".local/**", "dist/**"]),
 ]);

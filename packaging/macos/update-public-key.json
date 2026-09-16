@@ -1,6 +1,0 @@
-{
-  "keyId": "titanskies-macos-ed25519-1",
-  "algorithm": "Ed25519",
-  "publicKeyHex": "f95139626e4beea0594b72e50908da1c672c90f88b098c0d70f39fd30c6826ea",
-  "notes": "Embedded public key for macos-arm64 update manifests. The matching private key is held offline and is never shipped in the application."
-}

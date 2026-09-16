@@ -23,8 +23,10 @@ state out of this public repository.
 - Missing values are unavailable, never zero. A provider failure must not erase
   healthy providers; retain only validated last-good source assets and the last
   valid publication.
-- Keep the application read-only over HTTP. Validate all served paths against
-  traversal, symlink escape, size, and MIME allowlists.
+- Keep local deployments read-only over HTTP. The hosted `/api/context`
+  endpoint is Vercel-Cron-only and must fail closed without its bearer secret.
+  Validate all served paths against traversal, symlink escape, size, and MIME
+  allowlists.
 - Never commit secrets or fetched live datasets. Register and document every
   runtime data host and its provider terms.
 
@@ -39,6 +41,7 @@ Additional completion evidence named by native CI, recorded on the ticket when
 run: `npm run check:public`, `uv run mypy`, `uv run pytest`, Playwright e2e,
 docker image build, and compose smoke. `npm run verify:release` remains the
 public-release gate. `check:public` allows committed `.pad.toml` (workspace slug
-only) and the canonical `.pad/universal.lock.json`; it rejects all other `.pad/`
-metadata. Darwin arm64 Mac packaging uses `scripts/verify-macos` and is not
-required on Linux.
+only), the canonical `.pad/universal.lock.json`, and the audited Vercel adapter;
+it rejects credentials, local deployment state, and all other `.pad/` metadata.
+Release verification also covers the multi-architecture container and native
+Omarchy installer.

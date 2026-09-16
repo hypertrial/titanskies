@@ -2,6 +2,8 @@
 useDefault = true
 
 [[allowlists]]
-description = "Public Ed25519 private key used only for deterministic update-signature tests"
+description = "Historical deterministic Ed25519 fixture; deleted from the release tree"
+condition = "AND"
 rules = ["private-key"]
 paths = ['''^tests/python/fixtures/macos-update-test-ed25519\.pem$''']
+commits = ["3e443fc7bec6e86d48414dbe8f62d213f54d8880"]

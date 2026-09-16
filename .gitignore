@@ -177,12 +177,3 @@ playwright/.cache/
 # OS
 .DS_Store
 .vercel
-
-# macOS application build
-macos/TitanSkies/.build/
-macos/TitanSkies/.build-icon/
-macos/TitanSkies/.swiftpm/
-macos/TitanSkies/*.xcodeproj/xcuserdata/
-.local/macos-runtime/
-.local/macos-runtime-cache/
-packaging/macos/private-update-key.pem

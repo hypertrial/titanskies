@@ -1,10 +1,33 @@
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass
 from pathlib import Path
+from urllib.parse import urlparse
 
 _ROOT = Path(__file__).resolve().parent.parent
+_BLOB_STORE_ID = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
+
+
+def _validate_blob_settings(token: str, store_id: str, public_base_url: str) -> None:
+    if len(token) < 16 or token != token.strip() or not token.isascii() or any(character.isspace() for character in token):
+        raise ValueError("BLOB_READ_WRITE_TOKEN is required and malformed when STORAGE_BACKEND=blob")
+    if not _BLOB_STORE_ID.fullmatch(store_id):
+        raise ValueError("BLOB_STORE_ID is required and must contain only letters, digits, '_' or '-'")
+    parsed = urlparse(public_base_url)
+    host = (parsed.hostname or "").lower()
+    if (
+        parsed.scheme != "https"
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.port is not None
+        or parsed.query
+        or parsed.fragment
+        or parsed.path not in {"", "/"}
+        or host != f"{store_id}.public.blob.vercel-storage.com".lower()
+    ):
+        raise ValueError("PUBLIC_BLOB_BASE_URL must match the configured public Vercel Blob store")
 
 
 def _load_env_files() -> None:
@@ -57,6 +80,11 @@ def _env_choice(name: str, default: str, choices: set[str]) -> str:
 @dataclass(frozen=True)
 class Settings:
     context_source: str = "live"
+    storage_backend: str = "local"
+    blob_token: str = ""
+    blob_store_id: str = ""
+    public_blob_base_url: str = ""
+    cron_secret: str = ""
     local_frame_dir: Path = _ROOT / ".local" / "data"
     local_cache_dir: Path = _ROOT / ".local" / "cache"
     data_url_prefix: str = "/data"
@@ -88,11 +116,28 @@ class Settings:
     http_concurrency: int = 12
     context_source_concurrency: int = 3
 
+    def __post_init__(self) -> None:
+        if self.storage_backend not in {"local", "blob"}:
+            raise ValueError("STORAGE_BACKEND must be blob or local")
+        if self.storage_backend == "blob":
+            if os.environ.get("VERCEL_ENV", "").strip().lower() == "preview":
+                raise ValueError("STORAGE_BACKEND=blob is unavailable in Vercel Preview")
+            normalized_base = self.public_blob_base_url.rstrip("/")
+            normalized_store_id = self.blob_store_id.removeprefix("store_")
+            _validate_blob_settings(self.blob_token, normalized_store_id, normalized_base)
+            object.__setattr__(self, "blob_store_id", normalized_store_id)
+            object.__setattr__(self, "public_blob_base_url", normalized_base)
+
     @classmethod
     def from_env(cls) -> "Settings":
         _load_env_files()
         return cls(
             context_source=_env_choice("CONTEXT_SOURCE", "live", {"demo", "live"}),
+            storage_backend=_env_choice("STORAGE_BACKEND", "local", {"blob", "local"}),
+            blob_token=os.environ.get("BLOB_READ_WRITE_TOKEN", ""),
+            blob_store_id=os.environ.get("BLOB_STORE_ID", ""),
+            public_blob_base_url=os.environ.get("PUBLIC_BLOB_BASE_URL", "").rstrip("/"),
+            cron_secret=os.environ.get("CRON_SECRET", ""),
             local_frame_dir=Path(os.environ.get("TITANSKIES_DATA_DIR") or _ROOT / ".local" / "data"),
             local_cache_dir=Path(os.environ.get("TITANSKIES_CACHE_DIR") or _ROOT / ".local" / "cache"),
             data_url_prefix="/data",

@@ -7,6 +7,8 @@ trap 'exit 143' TERM
 
 npm run audit:prod
 npm run check:public
+command -v gitleaks >/dev/null 2>&1 || { echo "gitleaks is required" >&2; exit 1; }
+gitleaks git --redact --log-opts="--all"
 npm run lint
 npm run typecheck
 npm test
@@ -29,3 +31,4 @@ NEXT_PUBLIC_PERF_DIAGNOSTICS=1 \
 npm run build
 npm run benchmark:frontend:run
 npm run test:e2e
+./scripts/verify-container

@@ -11,8 +11,11 @@ test("smoothly animates adjacent FireWork hours", async ({ page }) => {
   const startProgress = await timeline.evaluate((element) => Number.parseFloat(element.style.getPropertyValue("--timeline-progress")));
   const labelLayer = page.getByTestId("map-label-layer");
   await expect(labelLayer).toHaveAttribute("data-label-catalog-count", "1271", { timeout: 45_000 });
+  await expect.poll(async () => Number(await labelLayer.getAttribute("data-label-layout-revision"))).toBeGreaterThan(0);
+  const mapLabels = page.locator(".map-label");
+  await expect.poll(() => mapLabels.count(), { timeout: 15_000 }).toBeGreaterThan(0);
+  const labelCount = await mapLabels.count();
   const labelRevision = Number(await labelLayer.getAttribute("data-label-layout-revision"));
-  const labelCount = await page.locator(".map-label").count();
   const canvasSize = await canvas.evaluate((element) => ({ width: (element as HTMLCanvasElement).width, height: (element as HTMLCanvasElement).height }));
   const canvasDigest = async () => createHash("sha256").update(await canvas.evaluate(async (element) => {
     await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));

@@ -1,1 +1,0 @@
-# TitanSkies macOS packaging helpers.

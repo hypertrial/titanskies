@@ -394,12 +394,10 @@ def test_signed_update_verifies_then_invokes_release_installer(tmp_path: Path) -
     checksums = tmp_path / "SHA256SUMS"
     checksums.write_text(f"{digest}  {archive.name}\n", encoding="utf-8")
     signature = tmp_path / "SHA256SUMS.sig"
-    certificate = tmp_path / "SHA256SUMS.pem"
     signature.write_text("synthetic signature\n", encoding="utf-8")
-    certificate.write_text("synthetic certificate\n", encoding="utf-8")
 
     subprocess.run(
-        [ROOT / "scripts/update-user", archive, checksums, signature, certificate],
+        [ROOT / "scripts/update-user", archive, checksums, signature],
         cwd=ROOT,
         env={**env, "FAKE_UPDATE_MARKER": str(marker)},
         check=True,
@@ -407,7 +405,32 @@ def test_signed_update_verifies_then_invokes_release_installer(tmp_path: Path) -
     assert marker.is_file()
     verification = log.read_text(encoding="utf-8")
     assert "verify-blob" in verification
-    assert "github\\.com/hypertrial/titanskies" in verification
+    assert "packaging/release-cosign.pub" in verification
+
+
+def test_signed_update_rejects_signature_before_hashing_or_extracting(tmp_path: Path) -> None:
+    env, _ = _fake_environment(tmp_path)
+    fake_bin = Path(env["PATH"].split(":", 1)[0])
+    marker = tmp_path / "sha256sum-called"
+    _executable(fake_bin / "cosign", "exit 1\n")
+    _executable(fake_bin / "sha256sum", ': > "$FAKE_HASH_MARKER"\nexit 0\n')
+    archive = tmp_path / "titanskies-0.1.0.tar.gz"
+    archive.write_bytes(b"untrusted archive")
+    checksums = tmp_path / "SHA256SUMS"
+    checksums.write_text(f"{'0' * 64}  {archive.name}\n", encoding="utf-8")
+    signature = tmp_path / "SHA256SUMS.sig"
+    signature.write_text("invalid\n", encoding="utf-8")
+
+    result = subprocess.run(
+        [ROOT / "scripts/update-user", archive, checksums, signature],
+        cwd=ROOT,
+        env={**env, "FAKE_HASH_MARKER": str(marker)},
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode != 0
+    assert not marker.exists()
 
 
 def test_signed_update_binds_checksum_to_exact_archive_name(tmp_path: Path) -> None:
@@ -430,11 +453,9 @@ def test_signed_update_binds_checksum_to_exact_archive_name(tmp_path: Path) -> N
         bundle.add(release.parents[1], arcname="titanskies-0.1.0")
 
     signature = tmp_path / "SHA256SUMS.sig"
-    certificate = tmp_path / "SHA256SUMS.pem"
     signature.write_text("synthetic signature\n", encoding="utf-8")
-    certificate.write_text("synthetic certificate\n", encoding="utf-8")
     result = subprocess.run(
-        [ROOT / "scripts/update-user", crafted, checksums, signature, certificate],
+        [ROOT / "scripts/update-user", crafted, checksums, signature],
         cwd=ROOT,
         env={**env, "FAKE_UPDATE_MARKER": str(marker)},
         capture_output=True,
@@ -467,6 +488,36 @@ def test_container_services_share_one_hardened_image_and_local_port() -> None:
     assert "cap_drop: [ALL]" in compose
     assert 'security_opt: ["no-new-privileges:true"]' in compose
     assert "data:/var/lib/titanskies:ro" in compose
+
+
+def test_manual_release_is_multiarch_offline_signed_and_immutable() -> None:
+    release = (ROOT / "scripts/release").read_text(encoding="utf-8")
+    updater = (ROOT / "scripts/update-user").read_text(encoding="utf-8")
+    verifier = (ROOT / "scripts/verify_release.sh").read_text(encoding="utf-8")
+    assert "git status --porcelain --untracked-files=all" in release
+    assert "git describe --tags --exact-match" in release
+    assert 'git cat-file -t "refs/tags/$tag"' in release
+    assert "linux/amd64,linux/arm64" in release
+    assert 'cosign sign --yes --key "$COSIGN_KEY" "$image@$digest"' in release
+    assert "cosign verify --key packaging/release-cosign.pub" in release
+    assert "cosign sign-blob" in release and "cosign verify-blob" in release
+    assert "--format '{{json .Manifest}}'" in release
+    assert 'gitleaks git --redact --log-opts="--all"' in verifier
+    assert 'gh release view "$tag"' in release
+    assert 'docker buildx imagetools inspect "$image:$tag"' in release
+    assert 'container image $image:$tag already exists' in release
+    assert 'gh release create "$tag"' in release
+    assert "./scripts/verify-container" in verifier
+    assert '"$#" -eq 3' in updater
+    assert 'cosign verify-blob --key "$public_key"' in updater
+    public_key = ROOT / "packaging/release-cosign.pub"
+    parsed = subprocess.run(
+        ["openssl", "pkey", "-pubin", "-in", public_key, "-text", "-noout"],
+        capture_output=True,
+        text=True,
+    )
+    assert parsed.returncode == 0, parsed.stderr
+    assert "ED25519 Public-Key" in parsed.stdout
 
 
 def test_installer_applies_documented_runtime_configuration(tmp_path: Path) -> None:
@@ -619,9 +670,6 @@ def test_license_report_includes_every_locked_python_variant(tmp_path: Path) -> 
     for name in ("package-lock.json", "uv.lock"):
         shutil.copy2(ROOT / name, tmp_path / name)
     shutil.copytree(ROOT / "shared", tmp_path / "shared")
-    packaging = tmp_path / "packaging/macos"
-    packaging.mkdir(parents=True)
-    shutil.copy2(ROOT / "packaging/macos/runtime-lock.json", packaging / "runtime-lock.json")
     scripts = tmp_path / "scripts"
     scripts.mkdir()
     shutil.copy2(ROOT / "scripts/license_report.py", scripts / "license_report.py")

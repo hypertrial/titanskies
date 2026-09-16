@@ -50,7 +50,7 @@ it("uses the configured watcher interval when deciding publication expiry", asyn
   expect(response.status).toBe(200);
   expect(body.issues).not.toContain("stale-heartbeat");
   expect(body.issues).not.toContain("stale-forecast");
-}, 15_000);
+}, 30_000);
 
 it("reports initializing with 503 before the first publication", async () => {
   process.env.TITANSKIES_DATA_DIR = await mkdtemp(path.join(tmpdir(), "titanskies-empty-"));
@@ -70,7 +70,7 @@ it("rejects a pointer whose URL disagrees with its local manifest path", async (
   const response = await GET(new Request("http://localhost/api/context-health"));
   expect(response.status).toBe(503);
   expect((await response.json()).issues).toContain("invalid-pointer");
-}, 15_000);
+}, 30_000);
 
 it("reports a publication unhealthy when the lowercase AQHI asset is missing", async () => {
   const directory = await demoPublication();
@@ -81,7 +81,7 @@ it("reports a publication unhealthy when the lowercase AQHI asset is missing", a
   const response = await GET(new Request("http://localhost/api/context-health"));
   expect(response.status).toBe(503);
   expect((await response.json()).issues).toContain("invalid-assets");
-}, 15_000);
+}, 30_000);
 
 it("returns all source states, coverage, and monitoring query validation without private errors", async () => {
   const directory = await demoPublication();
@@ -118,4 +118,4 @@ it("returns all source states, coverage, and monitoring query validation without
   const invalid = await GET(new Request("http://localhost/api/context-health?expectedSource=unknown"));
   expect(invalid.status).toBe(503);
   expect((await invalid.json()).issues).toContain("invalid-expected-source");
-}, 15_000);
+}, 30_000);

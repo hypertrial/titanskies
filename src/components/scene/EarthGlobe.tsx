@@ -6,7 +6,7 @@ import { frontSideOpacity, isScreenPointInSafeViewport, mapLabelLevelOpacity, pl
 import { lonLatToVector3 } from "@/rendering/projection";
 import { Html, Line } from "@react-three/drei";
 import { useFrame, useThree } from "@react-three/fiber";
-import { memo, useCallback, useEffect, useMemo, useRef } from "react";
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef } from "react";
 import {
   AdditiveBlending,
   BackSide,
@@ -129,6 +129,7 @@ function sameLayoutState(left: LayoutState | null, right: LayoutState): boolean 
 
 function MapLabelLayer({ compact, geo }: { compact: boolean; geo: GeoContext }) {
   const overlayRef = useRef<HTMLDivElement>(null);
+  const initialLayoutTimerRef = useRef<number | null>(null);
   const elementsRef = useRef(new Map<string, HTMLSpanElement>());
   const removalTimersRef = useRef(new Map<string, number>());
   const measuredWidthsRef = useRef(new Map<string, number>());
@@ -166,8 +167,6 @@ function MapLabelLayer({ compact, geo }: { compact: boolean; geo: GeoContext }) 
 
   useEffect(() => {
     lastStateRef.current = null;
-    const canvas = document.createElement("canvas");
-    canvasContextRef.current = canvas.getContext("2d");
     let cancelled = false;
     document.fonts?.ready.then(() => {
       if (cancelled) return;
@@ -181,6 +180,7 @@ function MapLabelLayer({ compact, geo }: { compact: boolean; geo: GeoContext }) 
   }, [geo, invalidate]);
 
   useEffect(() => () => {
+    if (initialLayoutTimerRef.current !== null) window.clearTimeout(initialLayoutTimerRef.current);
     removalTimersRef.current.forEach((timer) => window.clearTimeout(timer));
     removalTimersRef.current.clear();
     elementsRef.current.clear();
@@ -188,8 +188,11 @@ function MapLabelLayer({ compact, geo }: { compact: boolean; geo: GeoContext }) 
 
   const updateLayout = useCallback(() => {
     const overlay = overlayRef.current;
+    if (!canvasContextRef.current) {
+      canvasContextRef.current = document.createElement("canvas").getContext("2d");
+    }
     const context = canvasContextRef.current;
-    if (!overlay || !context) return;
+    if (!overlay) return 0;
     const nextState: LayoutState = {
       world: [...camera.matrixWorld.elements],
       projection: [...camera.projectionMatrix.elements],
@@ -198,7 +201,7 @@ function MapLabelLayer({ compact, geo }: { compact: boolean; geo: GeoContext }) 
       compact,
       fontRevision: fontRevisionRef.current,
     };
-    if (sameLayoutState(lastStateRef.current, nextState)) return;
+    if (sameLayoutState(lastStateRef.current, nextState)) return acceptedIdsRef.current.size;
     lastStateRef.current = nextState;
 
     const distance = camera.position.length();
@@ -232,8 +235,8 @@ function MapLabelLayer({ compact, geo }: { compact: boolean; geo: GeoContext }) 
       const measureKey = `${font}:${text}`;
       let width = measuredWidthsRef.current.get(measureKey);
       if (width === undefined) {
-        context.font = font;
-        width = Math.ceil(context.measureText(text).width) + (label.kind === "city" ? 8 : 2);
+        if (context) context.font = font;
+        width = Math.ceil(context?.measureText(text).width ?? text.length * fontSize * 0.62) + (label.kind === "city" ? 8 : 2);
         measuredWidthsRef.current.set(measureKey, width);
       }
       const tierPriority = label.tier === "overview" ? 0 : label.kind === "country" ? 1 : 2;
@@ -306,13 +309,48 @@ function MapLabelLayer({ compact, geo }: { compact: boolean; geo: GeoContext }) 
     overlay.dataset.labelAcceptedCount = String(accepted.length);
     overlay.dataset.labelLayoutRevision = String(layoutRevisionRef.current);
     overlay.dataset.visibleLabelIds = JSON.stringify(accepted.map((label) => label.id));
+    return accepted.length;
   }, [camera, cameraDirection, compact, geo.mapLabels.length, labels, projected, size.height, size.width]);
+
+  useLayoutEffect(() => {
+    updateLayout();
+    invalidate();
+  }, [invalidate, updateLayout]);
+
+  const setOverlayRef = useCallback((element: HTMLDivElement | null) => {
+    if (element && overlayRef.current !== element) {
+      removalTimersRef.current.forEach((timer) => window.clearTimeout(timer));
+      removalTimersRef.current.clear();
+      elementsRef.current.clear();
+      acceptedIdsRef.current.clear();
+    }
+    overlayRef.current = element;
+    if (initialLayoutTimerRef.current !== null) window.clearTimeout(initialLayoutTimerRef.current);
+    if (!element) return;
+    const deadline = performance.now() + 10_000;
+    const initialize = () => {
+      initialLayoutTimerRef.current = null;
+      lastStateRef.current = null;
+      const accepted = updateLayout();
+      invalidate();
+      if (accepted === 0 && overlayRef.current && performance.now() < deadline) {
+        initialLayoutTimerRef.current = window.setTimeout(initialize, 100);
+      }
+    };
+    initialLayoutTimerRef.current = window.setTimeout(initialize, 0);
+  }, [invalidate, updateLayout]);
 
   useFrame(() => updateLayout());
 
   return (
     <Html fullscreen zIndexRange={[4, 1]} style={{ pointerEvents: "none" }}>
-      <div ref={overlayRef} aria-hidden="true" className="map-label-layer" data-testid="map-label-layer" />
+      <div
+        ref={setOverlayRef}
+        aria-hidden="true"
+        className="map-label-layer"
+        data-testid="map-label-layer"
+        data-label-catalog-count={geo.mapLabels.length}
+      />
     </Html>
   );
 }

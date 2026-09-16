@@ -1,13 +1,17 @@
 #!/bin/sh
 set -eu
 
-[ "$#" -eq 4 ] || { echo "usage: update-user RELEASE.tar.gz SHA256SUMS SHA256SUMS.sig SHA256SUMS.pem" >&2; exit 2; }
+[ "$#" -eq 3 ] || { echo "usage: update-user RELEASE.tar.gz SHA256SUMS SHA256SUMS.sig" >&2; exit 2; }
 absolute_path() { directory=$(CDPATH='' cd -- "$(dirname -- "$1")" && pwd); printf '%s/%s\n' "$directory" "$(basename -- "$1")"; }
+root=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 archive=$(absolute_path "$1")
 checksums=$(absolute_path "$2")
 signature=$(absolute_path "$3")
-certificate=$(absolute_path "$4")
-command -v cosign >/dev/null 2>&1 || { echo "cosign is required to verify release provenance" >&2; exit 1; }
+public_key=$root/packaging/release-cosign.pub
+command -v cosign >/dev/null 2>&1 || { echo "cosign is required to verify the release signature" >&2; exit 1; }
+[ -f "$public_key" ] || { echo "embedded release public key is missing" >&2; exit 1; }
+[ -f "$archive" ] && [ -f "$checksums" ] && [ -f "$signature" ] || { echo "release inputs must be regular files" >&2; exit 1; }
+cosign verify-blob --key "$public_key" --signature "$signature" "$checksums"
 archive_name=$(basename -- "$archive")
 expected_digest=$(awk -v target="$archive_name" '
   $2 == target { digest = $1; matches += 1 }
@@ -15,9 +19,6 @@ expected_digest=$(awk -v target="$archive_name" '
 ' "$checksums") || { echo "release archive has no unique checksum entry" >&2; exit 1; }
 actual_digest=$(sha256sum "$archive" | awk '{print $1}')
 [ "$actual_digest" = "$expected_digest" ] || { echo "release archive checksum mismatch" >&2; exit 1; }
-cosign verify-blob --certificate "$certificate" --signature "$signature" \
-  --certificate-identity-regexp '^https://github\.com/hypertrial/titanskies/\.github/workflows/release\.yml@refs/tags/v[0-9].*$' \
-  --certificate-oidc-issuer https://token.actions.githubusercontent.com "$checksums"
 temporary=$(mktemp -d)
 trap 'rm -rf "$temporary"' EXIT HUP INT TERM
 tar -xzf "$archive" -C "$temporary"

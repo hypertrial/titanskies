@@ -8,7 +8,7 @@ curl -sS http://127.0.0.1:8080/api/context-health?expectedVersion=8
 docker compose logs web ingest
 ```
 
-For a native Linux install, use `systemctl --user status titanskies-web titanskies-ingest.timer` and `journalctl --user -u titanskies-ingest`. On macOS, use Settings → Open logs or `log` files under `~/Library/Logs/TitanSkies`.
+For a native Linux install, use `systemctl --user status titanskies-web titanskies-ingest.timer` and `journalctl --user -u titanskies-ingest`. On macOS, use Docker Desktop and `docker compose logs web ingest`, or use the hosted site.
 
 HTTP 503 is expected during first-start initialization. `degraded` with HTTP 200 means a valid publication remains usable but one or more providers failed, became stale, or were retained. AirNow `unavailable` is expected when `AIRNOW_API_KEY` is empty. The health heartbeat expires after twice `CONTEXT_WATCH_SECONDS`, with a 30-minute minimum, so every supported watcher interval has time to complete its next scheduled refresh.
 
@@ -20,9 +20,9 @@ Back up `TITANSKIES_DATA_DIR` (or `$XDG_STATE_HOME/titanskies`) while ingest is 
 
 Container updates are explicit: verify the signed GHCR manifest, change `TITANSKIES_VERSION` to the desired `vX.Y.Z` tag, run `docker compose pull`, then `docker compose up -d`. Keep the old image until `/api/healthz` succeeds and `/api/context-health` reports a valid publication.
 
-Native Linux updates use `scripts/update-user`, which verifies the release archive checksum and keyless signature before invoking the versioned installer. A failed activation, immediate ingest, or web self-check restores the prior `current` symlink. A failed first installation disables the new services and timer. Older releases remain under `$XDG_DATA_HOME/titanskies/releases` for manual rollback.
+Native Linux updates use `scripts/update-user`, which verifies the release archive checksum and offline-key signature against the committed trust root before invoking the versioned installer. A failed activation, immediate ingest, or web self-check restores the prior `current` symlink. A failed first installation disables the new services and timer. Older releases remain under `$XDG_DATA_HOME/titanskies/releases` for manual rollback.
 
-macOS updates are a verified DMG replacement with in-app Ed25519 manifest checks and whole-app rollback. They do not use the Linux tarball updater. See [`docs/MACOS.md`](MACOS.md).
+Vercel rollback promotes the recorded prior deployment or reverts the private wrapper repository's public-core submodule pin. Blob publications are immutable and must not be deleted or rewritten during rollback.
 
 Native `TITANSKIES_DATA_DIR` and `TITANSKIES_CACHE_DIR` values must be non-root absolute paths outside the versioned release directory. The installer resolves symlinks before rendering the systemd filesystem boundaries; uninstall refuses a symlinked installation directory. Purge removes the default XDG publication/cache directories, while custom paths are preserved for explicit manual removal.
 

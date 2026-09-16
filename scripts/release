@@ -1,0 +1,72 @@
+#!/bin/sh
+set -eu
+
+fail() { printf 'TitanSkies release: %s\n' "$*" >&2; exit 1; }
+root=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
+cd "$root"
+
+[ -z "$(git status --porcelain --untracked-files=all)" ] || fail "checkout must be clean"
+version=$(node -p 'require("./package.json").version')
+tag=v$version
+[ "$(git describe --tags --exact-match 2>/dev/null || true)" = "$tag" ] || fail "HEAD must be tagged $tag"
+[ "$(git cat-file -t "refs/tags/$tag" 2>/dev/null || true)" = tag ] || fail "$tag must be an annotated tag"
+[ -n "${COSIGN_KEY:-}" ] && [ -f "$COSIGN_KEY" ] || fail "COSIGN_KEY must name the offline private key"
+for command in docker cosign gh node npm; do command -v "$command" >/dev/null 2>&1 || fail "$command is required"; done
+gh repo view hypertrial/titanskies --json visibility --jq .visibility | grep -qx PUBLIC || fail "repository must be public"
+if gh release view "$tag" >/dev/null 2>&1; then fail "GitHub Release $tag already exists"; fi
+git ls-remote --exit-code origin "refs/tags/$tag" >/dev/null 2>&1 || fail "$tag is not present on origin"
+image=ghcr.io/hypertrial/titanskies
+if docker buildx imagetools inspect "$image:$tag" >/dev/null 2>&1; then
+  fail "container image $image:$tag already exists"
+fi
+
+builder=$(docker buildx inspect --bootstrap 2>&1) || fail "Docker Buildx is unavailable"
+printf '%s\n' "$builder" | grep -q 'linux/amd64' || fail "Buildx lacks linux/amd64"
+printf '%s\n' "$builder" | grep -q 'linux/arm64' || fail "Buildx lacks linux/arm64"
+
+npm run verify:release
+[ -z "$(git status --porcelain --untracked-files=all)" ] || fail "release gates changed the checkout"
+
+stage=$(mktemp -d "${TMPDIR:-/tmp}/titanskies-release.XXXXXX")
+trap 'rm -rf "$stage"' EXIT HUP INT TERM
+dist=$stage/dist
+mkdir -p "$dist"
+archive=$dist/titanskies-$version.tar.gz
+git archive --format=tar --prefix="titanskies-$version/" "$tag" | gzip -9 > "$archive"
+./scripts/run_python.sh scripts/generate_sbom.py "$dist/titanskies-$version-sbom.cdx.json"
+cp artifacts/THIRD_PARTY_NOTICES.md "$dist/titanskies-$version-third-party-notices.md"
+cp "docs/releases/$tag.md" "$dist/titanskies-$version-release-notes.md"
+
+docker buildx build --platform linux/amd64,linux/arm64 --tag "$image:$tag" --push .
+docker buildx imagetools inspect --format '{{json .Manifest}}' "$image:$tag" > "$stage/image-manifest.json"
+node -e '
+  const value = JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8"));
+  const platforms = (value.manifests || [])
+    .filter((item) => item.platform?.os !== "unknown" && item.platform?.architecture !== "unknown")
+    .map((item) => `${item.platform?.os}/${item.platform?.architecture}`)
+    .sort();
+  if (platforms.join(",") !== "linux/amd64,linux/arm64") process.exit(1);
+  if (!/^sha256:[0-9a-f]{64}$/.test(value.digest || "")) process.exit(1);
+' "$stage/image-manifest.json" || fail "published image manifest lacks an exact amd64/arm64 pair"
+digest=$(node -e 'process.stdout.write(JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8")).digest)' "$stage/image-manifest.json")
+printf '%s@%s\n' "$image" "$digest" > "$dist/titanskies-$version-image-digest.txt"
+cosign sign --yes --key "$COSIGN_KEY" "$image@$digest"
+cosign verify --key packaging/release-cosign.pub "$image@$digest" >/dev/null
+
+(
+  cd "$dist"
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum titanskies-$version.tar.gz titanskies-$version-sbom.cdx.json \
+      titanskies-$version-third-party-notices.md titanskies-$version-release-notes.md \
+      titanskies-$version-image-digest.txt > SHA256SUMS
+  else
+    shasum -a 256 titanskies-$version.tar.gz titanskies-$version-sbom.cdx.json \
+      titanskies-$version-third-party-notices.md titanskies-$version-release-notes.md \
+      titanskies-$version-image-digest.txt > SHA256SUMS
+  fi
+)
+cosign sign-blob --yes --key "$COSIGN_KEY" --output-signature "$dist/SHA256SUMS.sig" "$dist/SHA256SUMS"
+cosign verify-blob --key packaging/release-cosign.pub --signature "$dist/SHA256SUMS.sig" "$dist/SHA256SUMS" >/dev/null
+
+gh release create "$tag" "$dist"/* --verify-tag --latest --title "TitanSkies $version" --notes-file "docs/releases/$tag.md"
+printf 'Published TitanSkies %s and %s@%s\n' "$version" "$image" "$digest"

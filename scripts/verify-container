@@ -1,0 +1,38 @@
+#!/bin/sh
+set -eu
+
+cd "$(dirname "$0")/.."
+if docker compose version >/dev/null 2>&1; then
+  compose() { docker compose "$@"; }
+elif command -v docker-compose >/dev/null 2>&1; then
+  compose() { docker-compose "$@"; }
+else
+  echo "Docker Compose is required" >&2
+  exit 1
+fi
+project=titanskies-verify-$$
+version=verify-$$
+port=${TITANSKIES_VERIFY_PORT:-18080}
+cleanup() {
+  TITANSKIES_VERSION=$version TITANSKIES_PORT=$port CONTEXT_SOURCE=demo \
+    compose --project-name "$project" down --volumes --remove-orphans >/dev/null 2>&1 || true
+}
+trap cleanup EXIT HUP INT TERM
+
+TITANSKIES_VERSION=$version compose --project-name "$project" build --pull
+TITANSKIES_VERSION=$version TITANSKIES_PORT=$port CONTEXT_SOURCE=demo \
+  compose --project-name "$project" up --detach
+
+ready=0
+for _attempt in $(seq 1 90); do
+  if TITANSKIES_VERSION=$version TITANSKIES_PORT=$port CONTEXT_SOURCE=demo \
+    compose --project-name "$project" exec --no-TTY web node -e \
+      "Promise.all([fetch('http://127.0.0.1:8080/api/healthz'),fetch('http://127.0.0.1:8080/api/context-health?expectedVersion=8')]).then(r=>process.exit(r.every(x=>x.ok)?0:1)).catch(()=>process.exit(1))"; then
+    ready=1
+    break
+  fi
+  sleep 2
+done
+[ "$ready" -eq 1 ] || { compose --project-name "$project" logs web ingest >&2; exit 1; }
+docker image inspect "ghcr.io/hypertrial/titanskies:$version" --format '{{.Architecture}}' >/dev/null
+printf 'container and Compose smoke passed\n'

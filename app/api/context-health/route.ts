@@ -1,4 +1,5 @@
 import { isContextManifest, type ContextManifest, type ContextSource, type SourceState } from "@/data/contextSchema";
+import { blobBaseUrl, blobManifestValid, isBlobContextPointer, readBlobJson, type BlobContextPointer } from "@/server/blobData";
 import { isLocalContextPointer, localManifestAssetsAvailable, readLocalJson } from "@/server/localData";
 
 const DEFAULT_WATCH_SECONDS = 900;
@@ -6,6 +7,7 @@ const MIN_WATCH_SECONDS = 60;
 const MAX_WATCH_SECONDS = 3600;
 const MIN_FRESH_AGE_MS = 30 * 60_000;
 const MIN_COVERAGE_MS = 6 * 3_600_000;
+const UPSTREAM_DEADLINE_MS = 5_000;
 const SOURCES: ContextSource[] = ["airnow", "bcair", "sinaica", "aqhi", "wfigs", "cwfis", "firework", "hrrr"];
 const SOURCE_SET = new Set<ContextSource>(SOURCES);
 const headers = { "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff" };
@@ -76,20 +78,60 @@ export async function GET(request: Request): Promise<Response> {
 
   if (issues.length === 0) {
     try {
-      const [statusValue, pointerValue] = await Promise.all([
-        readLocalJson("context/status.json"),
-        readLocalJson("context/latest.json"),
-      ]);
+      const storageBackend = process.env.STORAGE_BACKEND?.trim() || "local";
+      const configuredBlob = storageBackend === "blob" ? process.env.PUBLIC_BLOB_BASE_URL?.trim() : undefined;
+      if (storageBackend !== "local" && storageBackend !== "blob") throw new Error("invalid storage backend");
+      if (storageBackend === "blob" && (process.env.VERCEL_ENV === "preview" || !configuredBlob)) {
+        throw new Error("Blob storage is unavailable in this deployment");
+      }
+      const base = configuredBlob ? blobBaseUrl(configuredBlob) : null;
+      if (configuredBlob && !base) throw new Error("invalid Blob origin");
+      const controller = new AbortController();
+      const deadline = setTimeout(() => controller.abort(), UPSTREAM_DEADLINE_MS);
+      let statusValue: unknown;
+      let pointerValue: unknown;
+      try {
+        if (base) {
+          [statusValue, pointerValue] = await Promise.all([
+            readBlobJson(`${base}/context/status.json`, controller.signal).then((item) => item.value),
+            readBlobJson(`${base}/context/latest.json`, controller.signal).then((item) => item.value),
+          ]);
+        } else {
+          [statusValue, pointerValue] = await Promise.all([
+            readLocalJson("context/status.json"),
+            readLocalJson("context/latest.json"),
+          ]);
+        }
+      } finally {
+        controller.abort();
+        clearTimeout(deadline);
+      }
       if (!validStatus(statusValue)) issues.push("invalid-status");
       else status = statusValue;
-      if (!isLocalContextPointer(pointerValue)) {
+      const validPointer = base ? isBlobContextPointer(pointerValue, base) : isLocalContextPointer(pointerValue);
+      if (!validPointer) {
         issues.push("invalid-pointer");
       } else {
-        pointerUpdatedAt = pointerValue.updatedAt;
-        const value = await readLocalJson(pointerValue.manifestPath);
-        if (!isContextManifest(value) || value.version !== pointerValue.version) issues.push("invalid-manifest");
-        else if (!await localManifestAssetsAvailable(pointerValue.manifestPath, value)) issues.push("invalid-assets");
-        else manifest = value;
+        const pointer = pointerValue as BlobContextPointer;
+        pointerUpdatedAt = pointer.updatedAt;
+        if (base) {
+          const controller = new AbortController();
+          const deadline = setTimeout(() => controller.abort(), UPSTREAM_DEADLINE_MS);
+          try {
+            const item = await readBlobJson(pointer.manifestUrl, controller.signal);
+            if (!isContextManifest(item.value) || item.value.version !== pointer.version
+              || !blobManifestValid(pointer, item.bytes, item.value, base)) issues.push("invalid-manifest");
+            else manifest = item.value;
+          } finally {
+            controller.abort();
+            clearTimeout(deadline);
+          }
+        } else {
+          const value = await readLocalJson(pointer.manifestPath);
+          if (!isContextManifest(value) || value.version !== pointer.version) issues.push("invalid-manifest");
+          else if (!await localManifestAssetsAvailable(pointer.manifestPath, value)) issues.push("invalid-assets");
+          else manifest = value;
+        }
       }
     } catch {
       issues.push("initializing");

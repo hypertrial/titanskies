@@ -78,13 +78,6 @@ for asset in assets:
         continue
     if not accepted(str(asset.get("license") or "")):
         failures.append(f"asset:{asset.get('origin', 'unknown')}:{asset.get('license', 'UNKNOWN')}")
-runtimes = []
-runtime_lock = json.loads((ROOT / "packaging/macos/runtime-lock.json").read_text(encoding="utf-8"))
-for name, item in runtime_lock.get("runtimes", {}).items():
-    license_name = item.get("license") or "UNKNOWN"
-    runtimes.append({"name": name, "version": item.get("version"), "license": license_name})
-    if not accepted(str(license_name)):
-        failures.append(f"runtime:{name}:{license_name}")
 static_files = [
     path.relative_to(ROOT).as_posix()
     for directory in (ROOT / "public", ROOT / "shared")
@@ -95,7 +88,6 @@ for extra in (
     ROOT / "app/icon.png",
     ROOT / "app/apple-icon.png",
     ROOT / "app/opengraph-image.png",
-    ROOT / "packaging/macos/UNSIGNED-BETA.txt",
 ):
     if extra.is_file():
         static_files.append(extra.relative_to(ROOT).as_posix())
@@ -104,7 +96,7 @@ for pathname in static_files:
         failures.append(f"asset:{pathname}:UNREGISTERED")
 
 OUT.parent.mkdir(parents=True, exist_ok=True)
-OUT.write_text(json.dumps({"schemaVersion": 1, "npm": npm, "python": python, "runtimes": runtimes, "assets": assets, "failures": failures}, indent=2) + "\n", encoding="utf-8")
+OUT.write_text(json.dumps({"schemaVersion": 1, "npm": npm, "python": python, "assets": assets, "failures": failures}, indent=2) + "\n", encoding="utf-8")
 if failures:
     raise SystemExit("proprietary or unknown licenses: " + ", ".join(failures))
 notice_lines = [
@@ -123,12 +115,6 @@ notice_lines = [
     "| Package | Version | License |",
     "| --- | --- | --- |",
     *(f"| `{item['name']}` | `{item['version']}` | {item['license']} |" for item in python),
-    "",
-    "## Bundled macOS runtimes",
-    "",
-    "| Runtime | Version | License |",
-    "| --- | --- | --- |",
-    *(f"| `{item['name']}` | `{item['version']}` | {item['license']} |" for item in runtimes),
     "",
     "## Bundled assets",
     "",

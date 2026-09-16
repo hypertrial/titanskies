@@ -9,12 +9,6 @@
       "terms": "LICENSE"
     },
     {
-      "patterns": ["packaging/macos/UNSIGNED-BETA.txt"],
-      "origin": "TitanSkies unsigned-beta install guidance",
-      "license": "MIT",
-      "terms": "LICENSE"
-    },
-    {
       "patterns": ["public/demo/**"],
       "origin": "TitanSkies deterministic synthetic demo generator",
       "license": "MIT",

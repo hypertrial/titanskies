@@ -20,7 +20,7 @@
     "typecheck": "next typegen && tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
-    "test:e2e": "playwright test --project=chromium && playwright test --project=mobile-webkit",
+    "test:e2e": "playwright test --project=chromium --project=mobile-webkit",
     "test:e2e:webkit": "playwright test --project=mobile-webkit",
     "audit:prod": "npm audit --omit=dev --audit-level=high",
     "generate:demo": "./scripts/run_python.sh scripts/generate_demo.py",

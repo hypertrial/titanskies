@@ -4,6 +4,7 @@ import fcntl
 import heapq
 import json
 import os
+import re
 import tempfile
 import time
 from contextlib import contextmanager
@@ -11,13 +12,22 @@ from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, ContextManager, Iterator, Protocol
 
 from ingest.config import Settings
 from ingest.perf import record_storage
 
 _DEFAULT_GET_MAX_BYTES = 16 * 1024 * 1024
+_SAFE_STORE_PATH = re.compile(r"^[A-Za-z0-9._/-]{1,1024}$")
 _OPERATION_DEADLINE: ContextVar[float | None] = ContextVar("storage_operation_deadline", default=None)
+
+
+def validate_store_path(value: str) -> str:
+    if not _SAFE_STORE_PATH.fullmatch(value) or value.startswith("/") or "//" in value:
+        raise ValueError("invalid store path")
+    if any(part in {".", ".."} for part in value.split("/")):
+        raise ValueError("invalid store path")
+    return value
 
 
 def _check_operation_deadline() -> None:
@@ -27,7 +37,7 @@ def _check_operation_deadline() -> None:
 
 
 @contextmanager
-def storage_operation_budget(seconds: float):
+def storage_operation_budget(seconds: float) -> Iterator[None]:
     token = _OPERATION_DEADLINE.set(time.monotonic() + seconds)
     try:
         yield
@@ -45,6 +55,23 @@ class StoragePage:
 class IngestLease:
     pathname: str
     owner: str
+    etag: str | None = None
+
+
+class FrameStore(Protocol):
+    def get_text(self, pathname: str) -> str | None: ...
+    def get_bytes(self, pathname: str, *, max_bytes: int = _DEFAULT_GET_MAX_BYTES) -> bytes | None: ...
+    def put_bytes(self, pathname: str, data: bytes, content_type: str, *, cache_seconds: int, overwrite: bool) -> str: ...
+    def put_json(self, pathname: str, payload: dict[str, Any], *, cache_seconds: int, overwrite: bool) -> str: ...
+    def get_authoritative_json(self, pathname: str) -> dict[str, Any] | None: ...
+    def list_page(self, prefix: str, cursor: str | None = None, limit: int = 250) -> StoragePage: ...
+    def list_prefix(self, prefix: str) -> list[str]: ...
+    def delete(self, pathname: str) -> None: ...
+    def delete_many(self, pathnames: list[str]) -> None: ...
+    def url_for(self, pathname: str) -> str: ...
+    def acquire_lease(self, pathname: str, owner: str, now: datetime, expires_at: datetime) -> IngestLease | None: ...
+    def release_lease(self, lease: IngestLease) -> None: ...
+    def operation_budget(self, seconds: float) -> ContextManager[None]: ...
 
 
 def _expired(payload: dict[str, Any], now: datetime) -> bool:
@@ -63,6 +90,7 @@ class LocalFrameStore:
         self.root.mkdir(parents=True, exist_ok=True)
 
     def _path(self, pathname: str, *, allow_final_symlink: bool = False) -> Path:
+        validate_store_path(pathname)
         relative = Path(pathname)
         if relative.is_absolute() or not relative.parts or ".." in relative.parts:
             raise ValueError("invalid store path")
@@ -138,7 +166,7 @@ class LocalFrameStore:
         if not root.exists():
             return StoragePage([], None)
 
-        def candidates():
+        def candidates() -> Iterator[str]:
             for path in root.rglob("*"):
                 _check_operation_deadline()
                 if path.is_file():
@@ -171,7 +199,7 @@ class LocalFrameStore:
             self.delete(pathname)
 
     def url_for(self, pathname: str) -> str:
-        return f"{self.url_prefix}/{pathname.lstrip('/')}"
+        return f"{self.url_prefix}/{validate_store_path(pathname)}"
 
     def acquire_lease(self, pathname: str, owner: str, now: datetime, expires_at: datetime) -> IngestLease | None:
         path = self._path(pathname)
@@ -214,14 +242,21 @@ class LocalFrameStore:
             finally:
                 fcntl.flock(guard_handle, fcntl.LOCK_UN)
 
+    def operation_budget(self, seconds: float) -> ContextManager[None]:
+        return storage_operation_budget(seconds)
 
-# The forecast pipeline uses this name for type annotations; local storage is the only implementation.
-FrameStore = LocalFrameStore
 
+def open_store(settings: Settings) -> FrameStore:
+    if settings.storage_backend == "blob":
+        from ingest.blob_store import BlobFrameStore
 
-def open_store(settings: Settings) -> LocalFrameStore:
+        return BlobFrameStore(settings)
     return LocalFrameStore(settings.local_frame_dir, settings.data_url_prefix)
 
 
-def open_cache_store(settings: Settings) -> LocalFrameStore:
+def open_cache_store(settings: Settings) -> FrameStore:
+    if settings.storage_backend == "blob":
+        from ingest.blob_store import BlobFrameStore
+
+        return BlobFrameStore(settings)
     return LocalFrameStore(settings.local_cache_dir, settings.data_url_prefix)

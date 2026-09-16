@@ -1,6 +1,6 @@
 # TitanSkies
 
-TitanSkies is a self-hosted North American wildfire-smoke forecast, air-quality observation, and reported-wildfire explorer. The application is MIT-licensed, has no analytics, and keeps its publications and caches on your machine.
+TitanSkies is a North American wildfire-smoke forecast, air-quality observation, and reported-wildfire explorer. The canonical MIT-licensed application runs through Docker, natively on Omarchy/systemd Linux, or as the public Vercel site. It has no analytics.
 
 > TitanSkies uses preliminary observations, model forecasts, and agency-reported incidents that may be delayed, incomplete, inaccurate, retained from an earlier update, or unavailable. It does not identify smoke origin and is not an emergency alert or medical service. Check source timestamps, official alerts, and local health guidance before acting.
 
@@ -14,7 +14,7 @@ Every enabled source is attempted on every ingest. `AIRNOW_API_KEY` is optional:
 
 ## Quick start with Docker Compose
 
-Requirements: Docker Engine with Compose v2, at least 1 GiB RAM, and at least 1 GiB persistent free space. Source builds need extra temporary space.
+Requirements: Docker Desktop or Docker Engine with Compose v2 on a supported 64-bit macOS, Windows, or Linux host, at least 1 GiB RAM, and at least 1 GiB persistent free space. Release images contain both `linux/amd64` and `linux/arm64`; source builds need extra temporary space.
 
 ```sh
 cp .env.example .env
@@ -41,10 +41,10 @@ The installer uses no sudo. It creates:
 - a systemd user web service and persistent 15-minute ingest timer;
 - a desktop entry opening <http://127.0.0.1:8080>.
 
-It runs one immediate ingest and rolls back the `current` symlink when the web self-check fails. Missing-tool errors include Omarchy guidance. For signed manual updates, download the release archive, `SHA256SUMS`, signature, and certificate, then run:
+It runs one immediate ingest and rolls back the `current` symlink when the web self-check fails. Missing-tool errors include Omarchy guidance. For signed manual updates, download the release archive, `SHA256SUMS`, and `SHA256SUMS.sig`, then run:
 
 ```sh
-./scripts/update-user titanskies-VERSION.tar.gz SHA256SUMS SHA256SUMS.sig SHA256SUMS.pem
+./scripts/update-user titanskies-VERSION.tar.gz SHA256SUMS SHA256SUMS.sig
 ```
 
 Normal uninstall preserves configuration, publications, and cache:
@@ -55,13 +55,13 @@ Normal uninstall preserves configuration, publications, and cache:
 
 Use `./scripts/uninstall-user --purge` only when you also want the default configuration, publication, and cache directories removed. Custom `TITANSKIES_DATA_DIR` or `TITANSKIES_CACHE_DIR` locations are preserved and must be removed manually.
 
-## macOS application (Apple Silicon)
+## Public Vercel deployment
 
-Requirements: macOS 13 or later on Apple Silicon. The production DMG bundles Node 22 and CPython 3.12; no host runtime or administrator password is required.
+Vercel production uses the same code and v8 publication contract with `STORAGE_BACKEND=blob`. A bearer-authenticated Python Cron function runs ingestion every 15 minutes with a 300-second application budget and 360-second function limit. Publications, leases, and reusable forecast caches live in Vercel Blob.
 
-Open the Developer ID signed and notarized DMG, choose **Install for Me**, and let TitanSkies copy itself to `~/Applications/TitanSkies.app`. Closing the window leaves `127.0.0.1:8080` and the 15-minute ingest job running. See [`docs/MACOS.md`](docs/MACOS.md); release operators use [`docs/MACOS_RELEASE.md`](docs/MACOS_RELEASE.md).
+Production is promoted only by updating the exact public-core submodule pin in the private deployment repository. Preview deployments use bundled demo data and receive no Blob token, provider key, or Cron secret. See [`docs/VERCEL.md`](docs/VERCEL.md).
 
-
+There is no native macOS application. Mac users run TitanSkies through Docker Desktop or use the hosted site.
 ## Source development
 
 ```sh
@@ -87,7 +87,7 @@ Run `./scripts/verify-fast` during development, `./scripts/verify` before mergin
 - `GET /api/context-health` returns health schema v1, publication timestamps and state, 37-hour coverage, remaining hours, all eight source states, and redacted issue codes. Healthy/degraded is HTTP 200; initializing, missing, invalid, or expired is HTTP 503. Monitoring may repeat `expectedSource` and provide `expectedVersion=8`.
 - `GET /api/healthz` is a process liveness probe.
 
-There is no HTTP ingest or administration endpoint.
+Docker and Omarchy have no HTTP ingest or administration endpoint. Vercel additionally exposes authenticated `GET /api/context` for Vercel Cron; authenticated `HEAD` performs no ingest.
 
 ## Configuration
 
@@ -95,6 +95,11 @@ See [`.env.example`](.env.example). The stable public settings are:
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
+| `STORAGE_BACKEND` | `local` | `local` for Docker/Omarchy, `blob` for Vercel production |
+| `BLOB_READ_WRITE_TOKEN` | empty | Required server-only Vercel Blob credential in Blob mode |
+| `BLOB_STORE_ID` | empty | Required Vercel Blob store identity in Blob mode |
+| `PUBLIC_BLOB_BASE_URL` | empty | Required public HTTPS Vercel Blob origin in Blob mode |
+| `CRON_SECRET` | empty | Required bearer secret for the Vercel Cron endpoint |
 | `TITANSKIES_DATA_DIR` | `.local/data` | Immutable manifests/assets and atomic pointer |
 | `TITANSKIES_CACHE_DIR` | `.local/cache` | Reusable numeric/model downloads |
 | `TITANSKIES_BIND_ADDR` | `127.0.0.1` | Web listener |
@@ -119,10 +124,6 @@ Localhost is the secure default. To opt in, set `TITANSKIES_BIND_ADDR=0.0.0.0`, 
 Back up the state directory to preserve the current and previous publication. Cache is disposable. If health remains `initializing`, inspect the ingest service; if one source fails, the source state and redacted issue code identify it while healthy data remains available. Never replace a missing value with zero.
 
 See [`docs/OPERATIONS.md`](docs/OPERATIONS.md) for service commands, recovery, updates, and troubleshooting; [`SECURITY.md`](SECURITY.md) for reporting; and [`CONTRIBUTING.md`](CONTRIBUTING.md) for contribution rules.
-
-## Omarchy plugin
-
-TitanSkies is being prepared as the application behind a separate `titanskies-omarchy` launcher/health-badge repository. The future plugin will poll `http://127.0.0.1:8080/api/context-health`; it will not install or manage TitanSkies. Omarchy shell plugins are root-manifest QML repositories and intentionally do not run install hooks or sudo commands. See the [official Omarchy plugin manual](https://omarchy.org/manual/shell-plugins/).
 
 ## License
 

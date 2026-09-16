@@ -8,7 +8,7 @@ import re
 from datetime import datetime, timezone
 from typing import Any
 
-from ingest.local_store import FrameStore, IngestLease, storage_operation_budget
+from ingest.local_store import FrameStore, IngestLease
 from ingest.context_contracts import validate_context_manifest
 from ingest.context_publish import CONTEXT_LATEST_PATH, _asset_path_from_url
 from ingest.perf import current_budget, current_metrics
@@ -107,7 +107,7 @@ def reconcile_orphans(
         _count("deferred")
         return
     try:
-        with storage_operation_budget(seconds):
+        with store.operation_budget(seconds):
             now = _now().timestamp()
             try:
                 state = _state(store.get_authoritative_json(STATE_PATH), now)
