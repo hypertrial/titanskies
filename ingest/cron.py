@@ -85,4 +85,3 @@ class CronHandler(BaseHTTPRequestHandler):
 
     def log_message(self, format: str, *args: object) -> None:  # noqa: A003
         return
-
