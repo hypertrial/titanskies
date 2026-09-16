@@ -656,6 +656,10 @@ def test_public_release_check_scans_all_runtime_hosts(tmp_path: Path) -> None:
     (root / ".pad.toml").write_text('workspace = "titanskies-smoke-engineering"\n', encoding="utf-8")
     assert subprocess.run(check, cwd=root, capture_output=True, text=True).returncode == 0
     (root / ".pad").mkdir()
+    (root / ".pad" / "universal.lock.json").write_text(
+        json.dumps({"repository": "titanskies", "version": "1.1.0"}), encoding="utf-8"
+    )
+    assert subprocess.run(check, cwd=root, capture_output=True, text=True).returncode == 0
     (root / ".pad" / "items.json").write_text("{}", encoding="utf-8")
     private_pad = subprocess.run(check, cwd=root, capture_output=True, text=True)
     assert private_pad.returncode == 1

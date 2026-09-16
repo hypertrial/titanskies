@@ -125,8 +125,14 @@ for path in ROOT.rglob("*"):
     if "@vercel/" in text or "vercel-storage.com" in text or "blob_read_write_token" in text:
         fail(f"proprietary deployment reference in {relative}")
 
-if (ROOT / ".pad").exists():
-    fail("private Pad metadata is present")
+pad_directory = ROOT / ".pad"
+if pad_directory.exists():
+    pad_files = {path.relative_to(pad_directory).as_posix() for path in pad_directory.rglob("*") if path.is_file()}
+    if pad_files != {"universal.lock.json"}:
+        fail("private Pad metadata is present")
+    lock = json.loads((pad_directory / "universal.lock.json").read_text(encoding="utf-8"))
+    if lock.get("repository") != "titanskies" or not isinstance(lock.get("version"), str):
+        fail("Universal Pad lock is invalid")
 workflows = ROOT / ".github/workflows"
 if workflows.is_dir():
     for workflow in workflows.glob("*.y*ml"):
