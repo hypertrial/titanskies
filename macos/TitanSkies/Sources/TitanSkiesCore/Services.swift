@@ -33,23 +33,30 @@ public struct ServiceManager: Sendable {
         if PathPolicy.isUntrustedInstallSource(paths.app) {
             throw TitanSkiesError.untrustedInstallSource("refuse to register services from \(paths.app.path)")
         }
+        for (label, executable) in [
+            ("web launcher", paths.webLauncher),
+            ("ingest launcher", paths.ingestLauncher),
+            ("Node", paths.node),
+            ("Python", paths.python),
+        ] {
+            try PathPolicy.requireInsideApp(executable, app: paths.app, label: label)
+            guard FileManager.default.isExecutableFile(atPath: executable.path) else {
+                throw TitanSkiesError.missingBundleResource(executable.path)
+            }
+        }
+        try PathPolicy.requireInsideApp(paths.runtime, app: paths.app, label: "runtime")
         try LogRotation.rotate(at: paths.webLog)
         try LogRotation.rotate(at: paths.ingestLog)
-        if portOccupier() != nil {
-            let webLabel = channel == .unsignedBeta
-                ? TitanSkiesIdentity.betaWebLabel
-                : TitanSkiesIdentity.productionWebLabel
-            guard launchd.isLoaded(webLabel, executable: paths.webLauncher) else {
+        let webLabel = channel == .unsignedBeta
+            ? TitanSkiesIdentity.betaWebLabel
+            : TitanSkiesIdentity.productionWebLabel
+        let ingestLabel = channel == .unsignedBeta
+            ? TitanSkiesIdentity.betaIngestLabel
+            : TitanSkiesIdentity.productionIngestLabel
+        if let listener = portOccupier() {
+            guard launchd.ownsListener(webLabel, executable: paths.webLauncher, listener: listener) else {
                 throw TitanSkiesError.foreignService
             }
-            if let snapshot = try? health.healthz(), snapshot.serviceIdentity {
-                let ingestLabel = channel == .unsignedBeta
-                    ? TitanSkiesIdentity.betaIngestLabel
-                    : TitanSkiesIdentity.productionIngestLabel
-                try launchd.kickstart(ingestLabel)
-                return
-            }
-            throw TitanSkiesError.foreignService
         }
         if channel == .unsignedBeta {
             try writeBetaAgents()
@@ -62,22 +69,31 @@ public struct ServiceManager: Sendable {
             try launchd.kickstart(TitanSkiesIdentity.productionIngestLabel)
         }
         _ = try health.waitForWeb()
+        guard let listener = portOccupier(),
+              launchd.ownsListener(webLabel, executable: paths.webLauncher, listener: listener) else {
+            throw TitanSkiesError.foreignService
+        }
     }
 
     public func stop() throws {
+        guard channel == .unsignedBeta else {
+            throw TitanSkiesError.launchd("production agents must be stopped through SMAppService")
+        }
         try launchd.bootout(TitanSkiesIdentity.betaWebLabel)
         try launchd.bootout(TitanSkiesIdentity.betaIngestLabel)
-        try launchd.bootout(TitanSkiesIdentity.productionWebLabel)
-        try launchd.bootout(TitanSkiesIdentity.productionIngestLabel)
     }
 
     public func restart() throws {
-        try stop()
+        if channel == .unsignedBeta {
+            try stop()
+        }
         try start()
     }
 
     public func repair() throws {
-        try stop()
+        if channel == .unsignedBeta {
+            try stop()
+        }
         try paths.createPrivateDirectories()
         if FileManager.default.fileExists(atPath: paths.betaWebPlist.path) {
             try FileManager.default.removeItem(at: paths.betaWebPlist)
@@ -132,8 +148,6 @@ public struct AppUninstaller: Sendable {
     public func uninstall(purge: Bool) throws {
         try launchd.bootout(TitanSkiesIdentity.betaWebLabel)
         try launchd.bootout(TitanSkiesIdentity.betaIngestLabel)
-        try launchd.bootout(TitanSkiesIdentity.productionWebLabel)
-        try launchd.bootout(TitanSkiesIdentity.productionIngestLabel)
         for label in [
             TitanSkiesIdentity.betaWebLabel,
             TitanSkiesIdentity.betaIngestLabel,

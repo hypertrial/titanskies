@@ -32,6 +32,8 @@ public enum RuntimeLauncher {
         let env = try EnvFile.load(from: paths.env, paths: paths)
         try LogRotation.rotate(at: kind == .web ? paths.webLog : paths.ingestLog)
         let executable = kind == .web ? paths.node : paths.python
+        try PathPolicy.requireInsideApp(executable, app: paths.app, label: kind == .web ? "Node" : "Python")
+        try PathPolicy.requireInsideApp(paths.runtime, app: paths.app, label: "runtime")
         guard FileManager.default.isExecutableFile(atPath: executable.path) else {
             throw TitanSkiesError.missingBundleResource(executable.path)
         }

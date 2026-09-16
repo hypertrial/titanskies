@@ -15,12 +15,14 @@ DIST=dist/macos
 DMG="$DIST/TitanSkies-$VERSION-macos-arm64.dmg"
 CHECKSUM="$DMG.sha256"
 MANIFEST="$DIST/macos-arm64-update.json"
+MANIFEST_STAGING="$DIST/.macos-arm64-update.$$.json"
 TAG="v$VERSION"
 WORK=$(mktemp -d /tmp/titanskies-release.XXXXXX)
 MOUNT="$WORK/mount"
 ATTACHED=0
 cleanup() {
   if [ "$ATTACHED" -eq 1 ]; then hdiutil detach "$MOUNT" -force >/dev/null 2>&1 || true; fi
+  rm -f "$MANIFEST_STAGING"
   rm -rf "$WORK"
 }
 trap cleanup EXIT HUP INT TERM
@@ -60,6 +62,10 @@ if info.get("CFBundleShortVersionString") != sys.argv[2] or str(info.get("CFBund
     raise SystemExit("bundle version metadata mismatch")
 if (app / "Contents/Resources/UNSIGNED-BETA.txt").exists():
     raise SystemExit("production app contains the unsigned-beta marker")
+root = app.resolve()
+for path in app.rglob("*"):
+    if path.is_symlink() and not path.resolve().is_relative_to(root):
+        raise SystemExit(f"application bundle contains an external symlink: {path}")
 latest = max(path.stat().st_mtime_ns for path in app.rglob("*") if path.exists())
 if latest <= 0:
     raise SystemExit("application bundle is stale")
@@ -191,7 +197,7 @@ ATTACHED=0
 (cd "$DIST" && shasum -a 256 "$(basename "$DMG")" > "$(basename "$CHECKSUM")")
 (cd "$DIST" && shasum -a 256 -c "$(basename "$CHECKSUM")")
 DIGEST=$(awk '{print $1}' "$CHECKSUM")
-python3 - "$WORK/manifest.json" "$VERSION" "$TAG" "$(basename "$DMG")" "$DIGEST" <<'PY'
+python3 - "$MANIFEST_STAGING" "$VERSION" "$TAG" "$(basename "$DMG")" "$DIGEST" <<'PY'
 import json, sys
 from pathlib import Path
 
@@ -209,9 +215,9 @@ payload = {
 }
 path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
 PY
-python3 scripts/macos_update_sign.py "$WORK/manifest.json" --key "$PRIVATE_KEY" \
+python3 scripts/macos_update_sign.py "$MANIFEST_STAGING" --key "$PRIVATE_KEY" \
   --current-version 0.0.0 --channel production
-mv "$WORK/manifest.json" "$MANIFEST"
+mv "$MANIFEST_STAGING" "$MANIFEST"
 python3 - "$DMG" "$CHECKSUM" "$MANIFEST" <<'PY'
 import sys
 from pathlib import Path

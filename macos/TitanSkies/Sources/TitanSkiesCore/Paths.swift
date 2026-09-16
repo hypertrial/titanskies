@@ -24,6 +24,7 @@ public struct TitanSkiesPaths: Sendable {
     public var data: URL { support.appendingPathComponent("data") }
     public var rollback: URL { support.appendingPathComponent("rollback") }
     public var updateStatus: URL { support.appendingPathComponent("update-status.txt") }
+    public var updateLog: URL { logs.appendingPathComponent("update.log") }
     public var cache: URL { home.appendingPathComponent("Library/Caches/TitanSkies") }
     public var logs: URL { home.appendingPathComponent("Library/Logs/TitanSkies") }
     public var webLog: URL { logs.appendingPathComponent("web.log") }
@@ -92,6 +93,14 @@ public enum PathPolicy {
         let values = try? url.resourceValues(forKeys: [.isSymbolicLinkKey])
         if values?.isSymbolicLink == true {
             throw TitanSkiesError.unsafePath("\(label) path must not be a symlink")
+        }
+    }
+
+    public static func requireInsideApp(_ url: URL, app: URL, label: String) throws {
+        let root = app.resolvingSymlinksInPath().standardizedFileURL.path
+        let resolved = url.resolvingSymlinksInPath().standardizedFileURL.path
+        guard resolved.hasPrefix(root + "/") else {
+            throw TitanSkiesError.unsafePath("\(label) must resolve inside the application bundle")
         }
     }
 }

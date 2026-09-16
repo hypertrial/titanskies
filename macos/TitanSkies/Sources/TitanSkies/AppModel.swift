@@ -140,8 +140,15 @@ final class AppModel: ObservableObject {
         guard beginNativeOperation() else { return }
         defer { finishNativeOperation() }
         let services = services
+        let channel = channel
         do {
-            try await Task.detached { try services.stop() }.value
+            try await Task.detached {
+                if channel == .production {
+                    try ProductionAgentRegistration.unregister()
+                } else {
+                    try services.stop()
+                }
+            }.value
             lifecycle = .stopped
         } catch {
             lifecycle = .error(error.localizedDescription)
@@ -160,8 +167,22 @@ final class AppModel: ObservableObject {
         guard beginNativeOperation() else { return }
         defer { finishNativeOperation() }
         let services = services
+        let channel = channel
         do {
-            try await Task.detached { try services.repair() }.value
+            let approvalRequired = try await Task.detached { () throws -> Bool in
+                if channel == .production {
+                    let approvalRequired = try ProductionAgentRegistration.reregister()
+                    if !approvalRequired { try services.start() }
+                    return approvalRequired
+                }
+                try services.repair()
+                return false
+            }.value
+            if approvalRequired {
+                SMAppService.openSystemSettingsLoginItems()
+                lifecycle = .approvalRequired
+                return
+            }
             lifecycle = .ready
         } catch {
             lifecycle = .repairRequired
@@ -198,7 +219,7 @@ final class AppModel: ObservableObject {
             defer { finishNativeOperation() }
             do {
                 if channel == .production {
-                    unregisterProductionLoginItems()
+                    try await unregisterProductionLoginItems()
                 }
                 let paths = paths
                 try await Task.detached { try AppUninstaller(paths: paths).uninstall(purge: purge) }.value
@@ -288,16 +309,13 @@ final class AppModel: ObservableObject {
 
     private func registerProductionIfSigned() async throws {
         let services = services
-        try await Task.detached { try services.migrateBetaToProduction() }.value
-        if #available(macOS 13.0, *) {
-            let web = SMAppService.agent(plistName: "com.hypertrial.titanskies.web.plist")
-            let ingest = SMAppService.agent(plistName: "com.hypertrial.titanskies.ingest.plist")
-            if web.status == .notRegistered { try web.register() }
-            if ingest.status == .notRegistered { try ingest.register() }
-            if web.status == .requiresApproval || ingest.status == .requiresApproval {
-                SMAppService.openSystemSettingsLoginItems()
-                throw TitanSkiesError.serviceApprovalRequired
-            }
+        let approvalRequired = try await Task.detached { () throws -> Bool in
+            try services.migrateBetaToProduction()
+            return try ProductionAgentRegistration.register()
+        }.value
+        if approvalRequired {
+            SMAppService.openSystemSettingsLoginItems()
+            throw TitanSkiesError.serviceApprovalRequired
         }
         let betaJobsRemain = await Task.detached {
             services.launchd.isLoaded(TitanSkiesIdentity.betaWebLabel)
@@ -338,10 +356,7 @@ final class AppModel: ObservableObject {
         try? FileManager.default.removeItem(at: paths.updateStatus)
     }
 
-    private func unregisterProductionLoginItems() {
-        if #available(macOS 13.0, *) {
-            try? SMAppService.agent(plistName: "com.hypertrial.titanskies.web.plist").unregister()
-            try? SMAppService.agent(plistName: "com.hypertrial.titanskies.ingest.plist").unregister()
-        }
+    private func unregisterProductionLoginItems() async throws {
+        try await Task.detached { try ProductionAgentRegistration.unregister() }.value
     }
 }

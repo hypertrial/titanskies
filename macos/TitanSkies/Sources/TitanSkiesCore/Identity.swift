@@ -39,12 +39,16 @@ public enum Channel: String, Sendable {
     public var showsUnsignedWarning: Bool { self == .unsignedBeta }
 
     public static func load(fromApp app: URL) -> Channel {
+        (try? validated(fromApp: app)) ?? .unsignedBeta
+    }
+
+    public static func validated(fromApp app: URL) throws -> Channel {
         let lockURL = app.appendingPathComponent("Contents/Resources/runtime-lock.json")
-        guard let data = try? Data(contentsOf: lockURL),
-              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+        let data = try Data(contentsOf: lockURL)
+        guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any],
               let raw = object["channel"] as? String,
               let channel = Channel(rawValue: raw) else {
-            return .unsignedBeta
+            throw TitanSkiesError.updateRejected("application channel metadata is invalid")
         }
         return channel
     }

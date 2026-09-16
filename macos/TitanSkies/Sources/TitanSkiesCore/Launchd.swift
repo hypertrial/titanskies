@@ -54,7 +54,13 @@ public struct LaunchdClient: Sendable {
     public var domain: String { "gui/\(uid)" }
 
     public func bootout(_ label: String) throws {
-        _ = try runner.run("/bin/launchctl", ["bootout", "\(domain)/\(label)"], environment: nil)
+        let result = try runner.run("/bin/launchctl", ["bootout", "\(domain)/\(label)"], environment: nil)
+        let missing = result.stderr.contains("Could not find service")
+            || result.stderr.contains("No such process")
+            || result.stderr.contains("service not found")
+        if !result.succeeded && !missing {
+            throw TitanSkiesError.launchd(result.stderr.isEmpty ? "bootout failed" : result.stderr)
+        }
     }
 
     public func bootstrap(plist: URL) throws {
@@ -75,7 +81,57 @@ public struct LaunchdClient: Sendable {
         let result = try? runner.run("/bin/launchctl", ["print", "\(domain)/\(label)"], environment: nil)
         guard result?.succeeded == true else { return false }
         guard let executable else { return true }
-        return result?.stdout.contains(executable.path) == true
+        return launchdProgram(in: result?.stdout ?? "") == executable.path
+    }
+
+    public func ownsListener(_ label: String, executable: URL, listener: String) -> Bool {
+        guard let result = try? runner.run("/bin/launchctl", ["print", "\(domain)/\(label)"], environment: nil),
+              result.succeeded,
+              launchdProgram(in: result.stdout) == executable.path,
+              let pid = launchdPID(in: result.stdout) else {
+            return false
+        }
+        for listenerPID in listenerPIDs(in: listener) {
+            if listenerPID == pid || parentPID(of: listenerPID) == pid {
+                return true
+            }
+        }
+        return false
+    }
+
+    private func launchdProgram(in output: String) -> String? {
+        value(after: "program =", in: output)
+    }
+
+    private func launchdPID(in output: String) -> String? {
+        value(after: "pid =", in: output)
+    }
+
+    private func value(after prefix: String, in output: String) -> String? {
+        for line in output.split(separator: "\n") {
+            let value = line.trimmingCharacters(in: .whitespaces)
+            guard value.hasPrefix(prefix) else { continue }
+            let result = value.dropFirst(prefix.count).trimmingCharacters(in: .whitespaces)
+            return result.isEmpty ? nil : result
+        }
+        return nil
+    }
+
+    private func listenerPIDs(in output: String) -> Set<String> {
+        Set(output.split(separator: "\n").compactMap { line in
+            let fields = line.split(whereSeparator: { $0.isWhitespace })
+            guard fields.count > 1, fields[1].allSatisfy({ $0.isNumber }) else { return nil }
+            return String(fields[1])
+        })
+    }
+
+    private func parentPID(of pid: String) -> String? {
+        guard let result = try? runner.run("/bin/ps", ["-o", "ppid=", "-p", pid], environment: nil),
+              result.succeeded else {
+            return nil
+        }
+        let parent = result.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+        return parent.allSatisfy({ $0.isNumber }) && !parent.isEmpty ? parent : nil
     }
 }
 

@@ -12,12 +12,12 @@ export default defineConfig({
   testDir: "tests/e2e",
   globalSetup: "./tests/e2e/global-setup.ts",
   globalTeardown: "./tests/e2e/global-teardown.ts",
-  // Dev-mode WebGL under SwiftShader can spend tens of seconds compiling and
-  // capturing frames when two workers overlap; performance budgets live in
-  // the production benchmark, while these tests verify behavior.
+  // Dev-mode WebGL uses SwiftShader in the release gate. Run one browser page
+  // at a time so frame and pointer assertions are deterministic; performance
+  // budgets live in the production benchmark.
   timeout: 90_000,
-  fullyParallel: true,
-  workers: 2,
+  fullyParallel: false,
+  workers: 1,
   forbidOnly: Boolean(process.env.CI),
   retries: process.env.CI ? 2 : 0,
   use: {

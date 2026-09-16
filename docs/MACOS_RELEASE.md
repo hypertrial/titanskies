@@ -64,7 +64,7 @@ Expected release assets are:
 - `TitanSkies-0.1.0-THIRD_PARTY_NOTICES.md`
 - `TitanSkies-0.1.0-release-notes.md`
 
-Complete the disposable-user acceptance test from the release work item before publication. Download through a browser so quarantine and Gatekeeper behavior are real; test install, approval, service persistence, current-version status, signed 0.0.9-to-0.1.0 update, forced rollback, repair, and both uninstall modes.
+Complete the disposable-user acceptance test from the release work item before publication. Download through a browser so quarantine and Gatekeeper behavior are real; test install, approval, service persistence, current-version status, signed 0.0.9-to-0.1.0 update, forced rollback, repair, and both uninstall modes. During update and rollback, confirm the embedded updater can unregister and re-register both `SMAppService` agents from the installed bundle and that the verified listener PID belongs to the expected launchd job.
 
 ## Publish manually
 

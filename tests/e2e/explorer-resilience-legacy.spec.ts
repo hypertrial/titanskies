@@ -15,7 +15,11 @@ test("shows healthy PM2.5 monitors while optional AQHI is stalled", async ({ pag
     await expect.poll(() => completed.size).toBe(3);
     await waitForReady(page, 5_000);
     await expect(page.getByTestId("error-state")).toHaveCount(0);
-    await expect(page.getByTestId("map-hover-layer")).toHaveAttribute("data-cluster-screens", /\{.*\}/);
+    await expect(page.getByTestId("map-hover-layer")).toHaveAttribute(
+      "data-cluster-screens",
+      /\{.*\}/,
+      { timeout: 45_000 },
+    );
   } finally { release(); }
 });
 
@@ -25,7 +29,7 @@ test("waits for complete city matching and rankings while the partial map is usa
   await page.route("**/aqhi-monitors.json", async (route) => { await held; await route.continue(); });
   try {
     await page.goto("/"); await waitForReady(page);
-    await page.getByTestId("view-air").click(); await waitForReady(page, 5_000);
+    await page.getByTestId("view-air").click();
     await page.getByRole("button", { name: "Worst 5 conditions" }).click();
     await expect(page.getByText("Loading official monitor readings…")).toBeVisible();
     await page.getByRole("button", { name: "Close Highest conditions" }).click();

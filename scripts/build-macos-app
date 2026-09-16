@@ -106,6 +106,10 @@ import subprocess, sys
 from pathlib import Path
 app = Path(sys.argv[1])
 entitlements = sys.argv[2]
+root = app.resolve()
+for path in app.rglob("*"):
+    if path.is_symlink() and not path.resolve().is_relative_to(root):
+        raise SystemExit(f"application bundle contains an external symlink: {path}")
 
 def macho_files(root: Path) -> list[Path]:
     files = []

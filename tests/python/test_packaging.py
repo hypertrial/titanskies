@@ -660,6 +660,15 @@ def test_public_release_check_scans_all_runtime_hosts(tmp_path: Path) -> None:
         json.dumps({"repository": "titanskies", "version": "1.1.0"}), encoding="utf-8"
     )
     assert subprocess.run(check, cwd=root, capture_output=True, text=True).returncode == 0
+    (root / ".pad" / "universal.lock.json").write_text(
+        json.dumps({"repository": "titanskies", "version": "1.1.0", "unexpected": "private"}), encoding="utf-8"
+    )
+    unexpected_lock_key = subprocess.run(check, cwd=root, capture_output=True, text=True)
+    assert unexpected_lock_key.returncode == 1
+    assert "Universal Pad lock is invalid" in unexpected_lock_key.stderr
+    (root / ".pad" / "universal.lock.json").write_text(
+        json.dumps({"repository": "titanskies", "version": "1.1.0"}), encoding="utf-8"
+    )
     (root / ".pad" / "items.json").write_text("{}", encoding="utf-8")
     private_pad = subprocess.run(check, cwd=root, capture_output=True, text=True)
     assert private_pad.returncode == 1

@@ -131,8 +131,25 @@ if pad_directory.exists():
     if pad_files != {"universal.lock.json"}:
         fail("private Pad metadata is present")
     lock = json.loads((pad_directory / "universal.lock.json").read_text(encoding="utf-8"))
-    if lock.get("repository") != "titanskies" or not isinstance(lock.get("version"), str):
+    allowed_lock_keys = {"repository", "version", "workspace", "files"}
+    if set(lock) - allowed_lock_keys or lock.get("repository") != "titanskies" or not isinstance(lock.get("version"), str):
         fail("Universal Pad lock is invalid")
+    if "workspace" in lock and lock["workspace"] != "titanskies-smoke-engineering":
+        fail("Universal Pad lock is invalid")
+    if "files" in lock:
+        expected_files = {
+            ".agents/skills/pad-engineering/SKILL.md",
+            "AGENTS.md",
+            "PROJECT_AGENT.md",
+            "scripts/verify",
+            "scripts/verify-fast",
+        }
+        files = lock["files"]
+        if not isinstance(files, dict) or set(files) != expected_files or any(
+            not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest)
+            for digest in files.values()
+        ):
+            fail("Universal Pad lock is invalid")
 workflows = ROOT / ".github/workflows"
 if workflows.is_dir():
     for workflow in workflows.glob("*.y*ml"):

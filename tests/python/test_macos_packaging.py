@@ -624,6 +624,9 @@ def test_production_build_inputs_and_release_sequence_fail_closed(tmp_path: Path
     assert release.index('xcrun stapler staple "$DMG"') < release.index("shasum -a 256")
     assert release.index("shasum -a 256") < release.index("scripts/macos_update_sign.py")
     assert 'diff -qr "$APP" "$MOUNTED_APP"' in release
+    assert 'MANIFEST_STAGING="$DIST/.macos-arm64-update.$$.json"' in release
+    assert 'mv "$MANIFEST_STAGING" "$MANIFEST"' in release
+    assert "application bundle contains an external symlink" in release
     assert "os.replace(temporary, path)" in signer
 
 
@@ -669,12 +672,14 @@ def test_linux_installer_tar_omits_swift_build_products(tmp_path: Path) -> None:
 def test_beta_and_production_labels_match_smappservice_sources() -> None:
     identity = (ROOT / "macos/TitanSkies/Sources/TitanSkiesCore/Identity.swift").read_text(encoding="utf-8")
     app_model = (ROOT / "macos/TitanSkies/Sources/TitanSkies/AppModel.swift").read_text(encoding="utf-8")
+    production_agents = (ROOT / "macos/TitanSkies/Sources/TitanSkiesCore/ProductionAgents.swift").read_text(encoding="utf-8")
     assert f'betaWebLabel = "{BETA_WEB_LABEL}"' in identity
     assert f'betaIngestLabel = "{BETA_INGEST_LABEL}"' in identity
     assert f'productionWebLabel = "{PRODUCTION_WEB_LABEL}"' in identity
     assert f'productionIngestLabel = "{PRODUCTION_INGEST_LABEL}"' in identity
-    assert "SMAppService.agent(plistName: \"com.hypertrial.titanskies.web.plist\")" in app_model
-    assert "SMAppService.agent(plistName: \"com.hypertrial.titanskies.ingest.plist\")" in app_model
+    assert '"com.hypertrial.titanskies.web.plist"' in production_agents
+    assert '"com.hypertrial.titanskies.ingest.plist"' in production_agents
+    assert "SMAppService.agent(plistName: plist)" in production_agents
     assert "registerProductionIfSigned()" in app_model[app_model.index("func start() async") : app_model.index("func saveSettings()")]
     assert "com.hypertrial.titanskies.beta.web.plist" not in app_model
     launchd = (ROOT / "macos/TitanSkies/Sources/TitanSkiesCore/Launchd.swift").read_text(encoding="utf-8")
@@ -686,7 +691,9 @@ def test_beta_and_production_labels_match_smappservice_sources() -> None:
     assert "KeepAlive" not in beta_ingest
     assert "Channel.load(fromApp:" in app_model
     update = (ROOT / "macos/TitanSkies/Sources/TitanSkiesCore/Update.swift").read_text(encoding="utf-8")
-    assert "Channel.load(fromApp:" in update[update.index("public struct LiveUpdateServiceManager") :]
+    live_services = update[update.index("public struct LiveUpdateServiceManager") : update.index("public protocol ApplicationValidating")]
+    assert "Channel.validated(fromApp:" in live_services
+    assert "--service-action" in live_services
     launcher = (ROOT / "macos/TitanSkies/Sources/TitanSkiesCore/RuntimeLauncher.swift").read_text(encoding="utf-8")
     assert "process.standardOutput = logHandle" in launcher
     assert "process.standardError = logHandle" in launcher
@@ -794,7 +801,10 @@ def test_uninstall_confirms_inactivity_before_purge_or_trash() -> None:
     for name in identity_labels:
         assert name in uninstall_fn
         assert name in loaded_check
-        assert uninstall_fn.index(f"launchd.bootout({name})") < uninstall_fn.index("isLoaded")
+        if "beta" in name:
+            assert uninstall_fn.index(f"launchd.bootout({name})") < uninstall_fn.index("isLoaded")
+        else:
+            assert f"launchd.bootout({name})" not in uninstall_fn
     assert uninstall_fn.index("launchd.bootout") < uninstall_fn.index("isLoaded")
     assert uninstall_fn.index("isLoaded") < uninstall_fn.index("if purge")
     assert uninstall_fn.index("isLoaded") < uninstall_fn.index("removeItem")
@@ -803,15 +813,18 @@ def test_uninstall_confirms_inactivity_before_purge_or_trash() -> None:
     is_loaded = launchd[launchd.index("public func isLoaded") : launchd.index("public enum LaunchdPlist")]
     assert '"print"' in is_loaded
     assert "result?.succeeded == true" in is_loaded
-    assert "stdout.contains(executable.path)" in is_loaded
+    assert "launchdProgram(in:" in is_loaded
+    assert "== executable.path" in is_loaded
     app_model = (ROOT / "macos/TitanSkies/Sources/TitanSkies/AppModel.swift").read_text(encoding="utf-8")
     model_uninstall = app_model[app_model.index("func uninstall(purge: Bool)") : app_model.index("func checkUpdates()")]
     assert model_uninstall.index("unregisterProductionLoginItems") < model_uninstall.index("AppUninstaller")
     assert model_uninstall.index("channel == .production") < model_uninstall.index("unregisterProductionLoginItems")
     unregister = app_model[app_model.index("private func unregisterProductionLoginItems") :]
-    assert "com.hypertrial.titanskies.web.plist" in unregister
-    assert "com.hypertrial.titanskies.ingest.plist" in unregister
-    assert ".unregister()" in unregister
+    production_agents = (ROOT / "macos/TitanSkies/Sources/TitanSkiesCore/ProductionAgents.swift").read_text(encoding="utf-8")
+    assert "ProductionAgentRegistration.unregister()" in unregister
+    assert '"com.hypertrial.titanskies.web.plist"' in production_agents
+    assert '"com.hypertrial.titanskies.ingest.plist"' in production_agents
+    assert ".unregister()" in production_agents
     assert "beta.web.plist" not in unregister
 
 
@@ -822,13 +835,13 @@ def test_production_smappservice_registers_from_start_not_beta() -> None:
     assert start.index("channel == .production") < start.index("registerProductionIfSigned")
     assert start.index("registerProductionIfSigned") < start.index("services.start()")
     register = app_model[app_model.index("func registerProductionIfSigned()") : app_model.index("private func beginNativeOperation")]
-    assert register.index("migrateBetaToProduction") < register.index("web.register()")
-    assert register.index("migrateBetaToProduction") < register.index("ingest.register()")
-    assert 'SMAppService.agent(plistName: "com.hypertrial.titanskies.web.plist")' in register
-    assert 'SMAppService.agent(plistName: "com.hypertrial.titanskies.ingest.plist")' in register
-    assert "beta.web.plist" not in register
-    assert "beta.ingest.plist" not in register
-    assert ".requiresApproval" in register
+    assert register.index("migrateBetaToProduction") < register.index("ProductionAgentRegistration.register()")
+    production_agents = (ROOT / "macos/TitanSkies/Sources/TitanSkiesCore/ProductionAgents.swift").read_text(encoding="utf-8")
+    assert '"com.hypertrial.titanskies.web.plist"' in production_agents
+    assert '"com.hypertrial.titanskies.ingest.plist"' in production_agents
+    assert "beta.web.plist" not in production_agents
+    assert "beta.ingest.plist" not in production_agents
+    assert ".requiresApproval" in production_agents
     assert "openSystemSettingsLoginItems" in register
     assert "Channel.load(fromApp:" in app_model
     services = (ROOT / "macos/TitanSkies/Sources/TitanSkiesCore/Services.swift").read_text(encoding="utf-8")
@@ -864,8 +877,11 @@ def test_update_apply_path_hashes_before_mount_and_sandboxes_helper() -> None:
     assert stage.index("Application Support") < stage.index("copyItem")
     assert "TitanSkies.staged.app" in stage
     assert "staged app must stay on the Applications volume" in stage
-    assert stage.index("StagedApp.validate(mountedApp") < stage.index("copyItem")
-    assert "StagedApp.validate(staged" in stage[stage.index("copyItem") :]
+    mounted_validation = stage.index("mountedApp,")
+    assert mounted_validation < stage.index("copyItem")
+    assert "requireProductionTrust: production" in stage[mounted_validation : stage.index("copyItem")]
+    copied_validation = stage.index("staged,", stage.index("copyItem"))
+    assert "requireProductionTrust: production" in stage[copied_validation:]
     helper = update[update.index("public func launchHelper") :]
     assert "TitanSkiesUpdater" in helper
     assert helper.index("Application Support") < helper.index("Process()")

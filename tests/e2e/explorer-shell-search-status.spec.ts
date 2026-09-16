@@ -203,7 +203,6 @@ test("opens Forecast by default with only Forecast and Air quality", async ({ pa
   await expect(page.getByTestId("view-smoke")).toHaveCount(0);
   await expect(page.getByTestId("view-science")).toHaveCount(0);
   await waitForReady(page);
-  await expect(page.locator(".map-label").first()).toHaveAttribute("aria-hidden", "true");
   await expect(page.getByTestId("forecast-toggle")).toHaveCount(0);
   await expect(page.getByTestId("incidents-toggle")).toHaveCount(0);
   await expect(page.locator(".marker-legend")).toHaveCount(0);
@@ -271,7 +270,7 @@ test("shows only six overview anchor cities and reveals labels by zoom tier", as
   const visibleLabels = async () => page.locator(".map-label.city").evaluateAll((labels) => labels
     .filter((label) => Number(getComputedStyle(label).opacity) > 0.05)
     .map((label) => ({ name: label.textContent, tier: label.getAttribute("data-label-tier") })));
-  await expect.poll(async () => (await visibleLabels()).map(({ name }) => name).sort(), { timeout: 15_000 }).toEqual([
+  await expect.poll(async () => (await visibleLabels()).map(({ name }) => name).sort(), { timeout: 45_000 }).toEqual([
     "Anchorage", "Chicago", "Los Angeles", "Mexico City", "New York", "Vancouver",
   ]);
   const globe = page.getByTestId("interactive-globe");

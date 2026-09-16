@@ -13,6 +13,19 @@ enum TitanSkiesUpdaterMain {
     }
 
     static func run(arguments: [String]) throws {
+        if arguments.count == 2, arguments[0] == "--service-action" {
+            switch arguments[1] {
+            case "unregister":
+                try ProductionAgentRegistration.unregister()
+            case "reregister":
+                if try ProductionAgentRegistration.reregister() {
+                    throw TitanSkiesError.serviceApprovalRequired
+                }
+            default:
+                throw TitanSkiesError.updateRejected("unknown service action \(arguments[1])")
+            }
+            return
+        }
         var values: [String: String] = [:]
         var index = 0
         while index < arguments.count {
@@ -48,7 +61,11 @@ enum TitanSkiesUpdaterMain {
         try PathPolicy.rejectSymlink(paths.applications, label: "Applications")
         try PathPolicy.rejectSymlink(paths.support, label: "support")
         try PathPolicy.rejectSymlink(rollbackDirectory, label: "rollback")
-        let result = try UpdateTransaction(services: LiveUpdateServiceManager(home: home)).run(
+        let expectedTeamID = try CodeSignature.teamIdentifier(of: liveURL)
+        let result = try UpdateTransaction(
+            services: LiveUpdateServiceManager(home: home, expectedTeamID: expectedTeamID),
+            validator: StagedApplicationValidator(expectedTeamID: expectedTeamID)
+        ).run(
             liveApp: liveURL,
             stagedApp: stagedURL,
             rollbackDirectory: rollbackDirectory,

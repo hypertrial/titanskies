@@ -194,11 +194,68 @@ public struct UpdateSwap: Sendable {
     }
 }
 
+public enum CodeSignature {
+    public static func teamIdentifier(of app: URL, runner: any ProcessRunning = FoundationProcessRunner()) throws -> String {
+        let details = try runner.run("/usr/bin/codesign", ["-dv", "--verbose=4", app.path], environment: nil)
+        let output = details.stderr + "\n" + details.stdout
+        guard let line = output.split(separator: "\n").first(where: { $0.hasPrefix("TeamIdentifier=") }) else {
+            throw TitanSkiesError.updateRejected("application signature has no Team ID")
+        }
+        return String(line.dropFirst("TeamIdentifier=".count))
+    }
+
+    public static func validateProductionApp(
+        _ app: URL,
+        expectedTeamID: String,
+        runner: any ProcessRunning = FoundationProcessRunner()
+    ) throws {
+        let verification = try runner.run("/usr/bin/codesign", ["--verify", "--deep", "--strict", app.path], environment: nil)
+        guard verification.succeeded else {
+            throw TitanSkiesError.updateRejected("staged application signature is invalid")
+        }
+        try validateIdentity(app, expectedTeamID: expectedTeamID, runner: runner)
+        if let enumerator = FileManager.default.enumerator(at: app, includingPropertiesForKeys: [.isRegularFileKey]) {
+            for case let path as URL in enumerator {
+                guard (try? path.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true else { continue }
+                let kind = try runner.run("/usr/bin/file", ["-b", path.path], environment: nil)
+                guard kind.stdout.contains("Mach-O") else { continue }
+                let nested = try runner.run("/usr/bin/codesign", ["--verify", "--strict", path.path], environment: nil)
+                guard nested.succeeded else {
+                    throw TitanSkiesError.updateRejected("nested application signature is invalid")
+                }
+                try validateIdentity(path, expectedTeamID: expectedTeamID, runner: runner)
+            }
+        }
+        let gatekeeper = try runner.run("/usr/sbin/spctl", ["--assess", "--type", "execute", app.path], environment: nil)
+        guard gatekeeper.succeeded else {
+            throw TitanSkiesError.updateRejected("staged application was rejected by Gatekeeper")
+        }
+    }
+
+    private static func validateIdentity(_ target: URL, expectedTeamID: String, runner: any ProcessRunning) throws {
+        let details = try runner.run("/usr/bin/codesign", ["-dv", "--verbose=4", target.path], environment: nil)
+        let output = details.stderr + "\n" + details.stdout
+        guard output.contains("Authority=Developer ID Application:") else {
+            throw TitanSkiesError.updateRejected("staged application is not Developer ID signed")
+        }
+        guard output.split(separator: "\n").contains(where: { $0 == "TeamIdentifier=\(expectedTeamID)" }) else {
+            throw TitanSkiesError.updateRejected("staged application Team ID mismatch")
+        }
+        guard output.split(separator: "\n").contains(where: {
+            $0.hasPrefix("CodeDirectory") && $0.localizedCaseInsensitiveContains("runtime")
+        }) else {
+            throw TitanSkiesError.updateRejected("staged application is missing Hardened Runtime")
+        }
+    }
+}
+
 public enum StagedApp {
     public static func validate(
         _ app: URL,
         expectedIdentifier: String = TitanSkiesIdentity.bundleIdentifier,
         newerThan currentVersion: String? = nil,
+        expectedTeamID: String? = nil,
+        requireProductionTrust: Bool = false,
         runner: any ProcessRunning = FoundationProcessRunner()
     ) throws {
         try PathPolicy.rejectSymlink(app, label: "application")
@@ -215,6 +272,7 @@ public enum StagedApp {
             throw TitanSkiesError.updateRejected("staged version is not newer")
         }
         let executable = app.appendingPathComponent("Contents/MacOS/TitanSkies")
+        try PathPolicy.rejectSymlink(executable, label: "TitanSkies executable")
         guard FileManager.default.isExecutableFile(atPath: executable.path) else {
             throw TitanSkiesError.updateRejected("staged app is missing TitanSkies")
         }
@@ -224,6 +282,12 @@ public enum StagedApp {
         }
         if !info.stdout.contains("arm64") {
             throw TitanSkiesError.updateRejected("staged executable is not arm64")
+        }
+        if requireProductionTrust {
+            guard let expectedTeamID, !expectedTeamID.isEmpty else {
+                throw TitanSkiesError.updateRejected("expected Developer ID Team ID is missing")
+            }
+            try CodeSignature.validateProductionApp(app, expectedTeamID: expectedTeamID, runner: runner)
         }
     }
 }
@@ -292,7 +356,18 @@ public struct UpdateApplier: Sendable {
             _ = try? runner.run("/usr/bin/hdiutil", ["detach", mount.path, "-force"], environment: nil)
         }
         let mountedApp = mount.appendingPathComponent("TitanSkies.app")
-        try StagedApp.validate(mountedApp, newerThan: currentVersion, runner: runner)
+        let production = manifest.channel == Channel.production.rawValue
+        let expectedTeamID = production ? try CodeSignature.teamIdentifier(of: paths.app, runner: runner) : nil
+        try StagedApp.validate(
+            mountedApp,
+            newerThan: currentVersion,
+            expectedTeamID: expectedTeamID,
+            requireProductionTrust: production,
+            runner: runner
+        )
+        guard try Channel.validated(fromApp: mountedApp).rawValue == manifest.channel else {
+            throw TitanSkiesError.updateRejected("staged application channel mismatch")
+        }
         let staged = paths.applications.appendingPathComponent("TitanSkies.staged.app")
         if staged.path.contains("Application Support") {
             throw TitanSkiesError.unsafePath("staged app must stay on the Applications volume")
@@ -301,7 +376,16 @@ public struct UpdateApplier: Sendable {
             try FileManager.default.removeItem(at: staged)
         }
         try FileManager.default.copyItem(at: mountedApp, to: staged)
-        try StagedApp.validate(staged, newerThan: currentVersion, runner: runner)
+        try StagedApp.validate(
+            staged,
+            newerThan: currentVersion,
+            expectedTeamID: expectedTeamID,
+            requireProductionTrust: production,
+            runner: runner
+        )
+        guard try Channel.validated(fromApp: staged).rawValue == manifest.channel else {
+            throw TitanSkiesError.updateRejected("copied application channel mismatch")
+        }
         return staged
     }
 
@@ -310,11 +394,25 @@ public struct UpdateApplier: Sendable {
             throw TitanSkiesError.unsafePath("updater must stay inside the live app")
         }
         let helper = staged.appendingPathComponent("Contents/MacOS/TitanSkiesUpdater")
+        let liveChannel = try Channel.validated(fromApp: paths.app)
+        let production = liveChannel == .production
+        let expectedTeamID = production ? try CodeSignature.teamIdentifier(of: paths.app, runner: runner) : nil
+        try StagedApp.validate(
+            staged,
+            expectedTeamID: expectedTeamID,
+            requireProductionTrust: production,
+            runner: runner
+        )
+        try PathPolicy.requireInsideApp(helper, app: staged, label: "updater")
         guard FileManager.default.isExecutableFile(atPath: helper.path) else {
             throw TitanSkiesError.missingBundleResource("TitanSkiesUpdater")
         }
         if helper.path.contains("Application Support") {
             throw TitanSkiesError.unsafePath("updater must stay inside the live app")
+        }
+        let helperInfo = try runner.run("/usr/bin/file", ["-b", helper.path], environment: nil)
+        guard helperInfo.stdout.contains("arm64"), !helperInfo.stdout.contains("x86_64") else {
+            throw TitanSkiesError.updateRejected("updater must be arm64-only")
         }
         let process = Process()
         process.executableURL = helper
@@ -327,7 +425,17 @@ public struct UpdateApplier: Sendable {
             "PATH": "/usr/bin:/bin",
             "HOME": paths.home.path,
         ]
+        try paths.createPrivateDirectories()
+        try LogRotation.rotate(at: paths.updateLog)
+        if !FileManager.default.fileExists(atPath: paths.updateLog.path) {
+            FileManager.default.createFile(atPath: paths.updateLog.path, contents: nil)
+        }
+        let logHandle = try FileHandle(forWritingTo: paths.updateLog)
+        try logHandle.seekToEnd()
+        process.standardOutput = logHandle
+        process.standardError = logHandle
         try process.run()
+        try? logHandle.close()
     }
 }
 
@@ -338,17 +446,46 @@ public protocol UpdateServiceManaging: Sendable {
 
 public struct LiveUpdateServiceManager: UpdateServiceManaging {
     public let home: URL
+    public let expectedTeamID: String
+    public let runner: any ProcessRunning
 
-    public init(home: URL) {
+    public init(home: URL, expectedTeamID: String = "", runner: any ProcessRunning = FoundationProcessRunner()) {
         self.home = home
+        self.expectedTeamID = expectedTeamID
+        self.runner = runner
     }
 
     public func stop(app: URL) throws {
-        try ServiceManager(paths: TitanSkiesPaths(home: home, app: app), channel: Channel.load(fromApp: app)).stop()
+        try manageProductionAgents(app: app, action: "unregister")
     }
 
     public func start(app: URL) throws {
-        try ServiceManager(paths: TitanSkiesPaths(home: home, app: app), channel: Channel.load(fromApp: app)).start()
+        try manageProductionAgents(app: app, action: "reregister")
+        try ServiceManager(paths: TitanSkiesPaths(home: home, app: app), channel: .production).start()
+    }
+
+    private func manageProductionAgents(app: URL, action: String) throws {
+        guard try Channel.validated(fromApp: app) == .production else {
+            throw TitanSkiesError.updateRejected("update services require a production application")
+        }
+        try StagedApp.validate(
+            app,
+            expectedTeamID: expectedTeamID,
+            requireProductionTrust: true,
+            runner: runner
+        )
+        let helper = app.appendingPathComponent("Contents/MacOS/TitanSkiesUpdater")
+        try PathPolicy.requireInsideApp(helper, app: app, label: "updater")
+        guard FileManager.default.isExecutableFile(atPath: helper.path) else {
+            throw TitanSkiesError.missingBundleResource("TitanSkiesUpdater")
+        }
+        let result = try runner.run(helper.path, ["--service-action", action], environment: [
+            "PATH": "/usr/bin:/bin",
+            "HOME": home.path,
+        ])
+        guard result.succeeded else {
+            throw TitanSkiesError.launchd(result.stderr.isEmpty ? "unable to \(action) production agents" : result.stderr)
+        }
     }
 }
 
@@ -357,10 +494,18 @@ public protocol ApplicationValidating: Sendable {
 }
 
 public struct StagedApplicationValidator: ApplicationValidating {
-    public init() {}
+    public let expectedTeamID: String?
+
+    public init(expectedTeamID: String? = nil) {
+        self.expectedTeamID = expectedTeamID
+    }
 
     public func validate(_ app: URL) throws {
-        try StagedApp.validate(app)
+        try StagedApp.validate(
+            app,
+            expectedTeamID: expectedTeamID,
+            requireProductionTrust: expectedTeamID != nil
+        )
     }
 }
 
@@ -420,17 +565,19 @@ public struct UpdateTransaction: Sendable {
         try validator.validate(stagedApp)
         let manager = FileManager.default
         let rollbackApp = rollbackDirectory.appendingPathComponent("TitanSkies.app")
-        try services.stop(app: liveApp)
-        try manager.createDirectory(at: rollbackDirectory, withIntermediateDirectories: true)
-        if manager.fileExists(atPath: rollbackApp.path) {
-            try manager.removeItem(at: rollbackApp)
-        }
-        guard manager.fileExists(atPath: liveApp.path) else {
-            throw TitanSkiesError.updateRejected("live application is missing")
-        }
-        try manager.moveItem(at: liveApp, to: rollbackApp)
+        var liveWasMoved = false
 
         do {
+            try services.stop(app: liveApp)
+            try manager.createDirectory(at: rollbackDirectory, withIntermediateDirectories: true)
+            if manager.fileExists(atPath: rollbackApp.path) {
+                try manager.removeItem(at: rollbackApp)
+            }
+            guard manager.fileExists(atPath: liveApp.path) else {
+                throw TitanSkiesError.updateRejected("live application is missing")
+            }
+            try manager.moveItem(at: liveApp, to: rollbackApp)
+            liveWasMoved = true
             try manager.moveItem(at: stagedApp, to: liveApp)
             try validator.validate(liveApp)
             try services.start(app: liveApp)
@@ -440,21 +587,27 @@ public struct UpdateTransaction: Sendable {
             let updateFailure = error
             do {
                 try? services.stop(app: liveApp)
-                if manager.fileExists(atPath: liveApp.path) {
-                    let failed = rollbackDirectory.appendingPathComponent("TitanSkies.failed.app")
-                    if manager.fileExists(atPath: failed.path) {
-                        try manager.removeItem(at: failed)
+                if liveWasMoved {
+                    if manager.fileExists(atPath: liveApp.path) {
+                        let failed = rollbackDirectory.appendingPathComponent("TitanSkies.failed.app")
+                        if manager.fileExists(atPath: failed.path) {
+                            try manager.removeItem(at: failed)
+                        }
+                        try manager.moveItem(at: liveApp, to: failed)
                     }
-                    try manager.moveItem(at: liveApp, to: failed)
+                    try validator.validate(rollbackApp)
+                    try manager.moveItem(at: rollbackApp, to: liveApp)
                 }
-                try validator.validate(rollbackApp)
-                try manager.moveItem(at: rollbackApp, to: liveApp)
                 try validator.validate(liveApp)
                 try services.start(app: liveApp)
                 if let rollbackStatusURL {
                     let notice = "TitanSkies rolled back to the previous version after an update failed: \(updateFailure.localizedDescription)\n"
-                    try notice.write(to: rollbackStatusURL, atomically: true, encoding: .utf8)
-                    try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: rollbackStatusURL.path)
+                    do {
+                        try notice.write(to: rollbackStatusURL, atomically: true, encoding: .utf8)
+                        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: rollbackStatusURL.path)
+                    } catch {
+                        // Restoring and relaunching the previous app is more important than its one-shot notice.
+                    }
                 }
                 try relauncher.relaunch(liveApp)
                 return .rolledBack(updateFailure.localizedDescription)
