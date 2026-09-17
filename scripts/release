@@ -5,20 +5,59 @@ fail() { printf 'TitanSkies release: %s\n' "$*" >&2; exit 1; }
 root=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 cd "$root"
 
+verify_remote_tag() {
+  remote_refs=$(git ls-remote origin "refs/tags/$tag" "refs/tags/$tag^{}") || fail "could not inspect origin tag $tag"
+  remote_tag=$(printf '%s\n' "$remote_refs" | awk -v ref="refs/tags/$tag" '$2 == ref { print $1 }')
+  remote_commit=$(printf '%s\n' "$remote_refs" | awk -v ref="refs/tags/$tag^{}" '$2 == ref { print $1 }')
+  [ "$remote_tag" = "$local_tag" ] && [ "$remote_commit" = "$revision" ] \
+    || fail "origin tag $tag does not match this checkout"
+}
+
+validate_image_manifest() {
+  node -e '
+    const value = JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8"));
+    const platforms = (value.manifests || [])
+      .filter((item) => item.platform?.os !== "unknown" && item.platform?.architecture !== "unknown")
+      .map((item) => `${item.platform?.os}/${item.platform?.architecture}`)
+      .sort();
+    if (platforms.join(",") !== "linux/amd64,linux/arm64") process.exit(1);
+    if (!/^sha256:[0-9a-f]{64}$/.test(value.digest || "")) process.exit(1);
+    const expected = {
+      "org.opencontainers.image.revision": process.argv[2],
+      "org.opencontainers.image.version": process.argv[3],
+      "org.opencontainers.image.source": process.argv[4],
+    };
+    if (Object.entries(expected).some(([key, expectedValue]) => value.annotations?.[key] !== expectedValue)) process.exit(1);
+  ' "$1" "$revision" "$version" "$source" || fail "published image manifest does not match this release"
+}
+
 [ -z "$(git status --porcelain --untracked-files=all)" ] || fail "checkout must be clean"
 version=$(node -p 'require("./package.json").version')
 tag=v$version
 [ "$(git describe --tags --exact-match 2>/dev/null || true)" = "$tag" ] || fail "HEAD must be tagged $tag"
 [ "$(git cat-file -t "refs/tags/$tag" 2>/dev/null || true)" = tag ] || fail "$tag must be an annotated tag"
+revision=$(git rev-parse HEAD)
+local_tag=$(git rev-parse "refs/tags/$tag")
+[ "$(git rev-parse "$tag^{}")" = "$revision" ] || fail "$tag does not point to HEAD"
 [ -n "${COSIGN_KEY:-}" ] && [ -f "$COSIGN_KEY" ] || fail "COSIGN_KEY must name the offline private key"
 for command in docker cosign gh node npm; do command -v "$command" >/dev/null 2>&1 || fail "$command is required"; done
+stage=$(mktemp -d "${TMPDIR:-/tmp}/titanskies-release.XXXXXX")
+trap 'rm -rf "$stage"' EXIT HUP INT TERM
+printf 'TitanSkies release key check\n' > "$stage/key-check"
+cosign sign-blob --yes --key "$COSIGN_KEY" --tlog-upload=false --output-signature "$stage/key-check.sig" "$stage/key-check" >/dev/null
+cosign verify-blob --key packaging/release-cosign.pub --signature "$stage/key-check.sig" "$stage/key-check" >/dev/null \
+  || fail "COSIGN_KEY does not match packaging/release-cosign.pub"
 gh repo view hypertrial/titanskies --json visibility --jq .visibility | grep -qx PUBLIC || fail "repository must be public"
-if gh release view "$tag" >/dev/null 2>&1; then fail "GitHub Release $tag already exists"; fi
-git ls-remote --exit-code origin "refs/tags/$tag" >/dev/null 2>&1 || fail "$tag is not present on origin"
+release_json=$(gh release list --limit 1000 --json tagName,isDraft) || fail "could not inspect GitHub Releases"
+release_state=$(printf '%s' "$release_json" | node -e '
+  const releases = JSON.parse(require("node:fs").readFileSync(0, "utf8"));
+  const release = releases.find((item) => item.tagName === process.argv[1]);
+  if (release) process.stdout.write(String(release.isDraft));
+' "$tag") || fail "invalid GitHub Release response"
+[ "$release_state" != false ] || fail "published GitHub Release $tag already exists"
 image=ghcr.io/hypertrial/titanskies
-if docker buildx imagetools inspect "$image:$tag" >/dev/null 2>&1; then
-  fail "container image $image:$tag already exists"
-fi
+source=https://github.com/hypertrial/titanskies
+verify_remote_tag
 
 builder=$(docker buildx inspect --bootstrap 2>&1) || fail "Docker Buildx is unavailable"
 printf '%s\n' "$builder" | grep -q 'linux/amd64' || fail "Buildx lacks linux/amd64"
@@ -27,8 +66,6 @@ printf '%s\n' "$builder" | grep -q 'linux/arm64' || fail "Buildx lacks linux/arm
 npm run verify:release
 [ -z "$(git status --porcelain --untracked-files=all)" ] || fail "release gates changed the checkout"
 
-stage=$(mktemp -d "${TMPDIR:-/tmp}/titanskies-release.XXXXXX")
-trap 'rm -rf "$stage"' EXIT HUP INT TERM
 dist=$stage/dist
 mkdir -p "$dist"
 archive=$dist/titanskies-$version.tar.gz
@@ -37,21 +74,31 @@ git archive --format=tar --prefix="titanskies-$version/" "$tag" | gzip -9 > "$ar
 cp artifacts/THIRD_PARTY_NOTICES.md "$dist/titanskies-$version-third-party-notices.md"
 cp "docs/releases/$tag.md" "$dist/titanskies-$version-release-notes.md"
 
-docker buildx build --platform linux/amd64,linux/arm64 --tag "$image:$tag" --push .
-docker buildx imagetools inspect --format '{{json .Manifest}}' "$image:$tag" > "$stage/image-manifest.json"
-node -e '
-  const value = JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8"));
-  const platforms = (value.manifests || [])
-    .filter((item) => item.platform?.os !== "unknown" && item.platform?.architecture !== "unknown")
-    .map((item) => `${item.platform?.os}/${item.platform?.architecture}`)
-    .sort();
-  if (platforms.join(",") !== "linux/amd64,linux/arm64") process.exit(1);
-  if (!/^sha256:[0-9a-f]{64}$/.test(value.digest || "")) process.exit(1);
-' "$stage/image-manifest.json" || fail "published image manifest lacks an exact amd64/arm64 pair"
-digest=$(node -e 'process.stdout.write(JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8")).digest)' "$stage/image-manifest.json")
+if docker buildx imagetools inspect --format '{{json .Manifest}}' "$image:$tag" > "$stage/image-manifest.json" 2>/dev/null; then
+  validate_image_manifest "$stage/image-manifest.json"
+  digest=$(node -e 'process.stdout.write(JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8")).digest)' "$stage/image-manifest.json")
+  cosign verify --key packaging/release-cosign.pub "$image@$digest" >/dev/null \
+    || fail "existing image is not signed by the TitanSkies release key"
+else
+  candidate=$image:release-$revision
+  docker buildx build --platform linux/amd64,linux/arm64 \
+    --annotation "index:org.opencontainers.image.source=$source" \
+    --annotation "index:org.opencontainers.image.revision=$revision" \
+    --annotation "index:org.opencontainers.image.version=$version" \
+    --tag "$candidate" --push .
+  docker buildx imagetools inspect --format '{{json .Manifest}}' "$candidate" > "$stage/image-manifest.json"
+  validate_image_manifest "$stage/image-manifest.json"
+  digest=$(node -e 'process.stdout.write(JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8")).digest)' "$stage/image-manifest.json")
+  cosign sign --yes --key "$COSIGN_KEY" "$image@$digest"
+  cosign verify --key packaging/release-cosign.pub "$image@$digest" >/dev/null
+  docker buildx imagetools create --tag "$image:$tag" "$image@$digest"
+  docker buildx imagetools inspect --format '{{json .Manifest}}' "$image:$tag" > "$stage/image-manifest.json"
+  validate_image_manifest "$stage/image-manifest.json"
+  [ "$(node -e 'process.stdout.write(JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8")).digest)' "$stage/image-manifest.json")" = "$digest" ] \
+    || fail "promoted image digest changed"
+  cosign verify --key packaging/release-cosign.pub "$image@$digest" >/dev/null
+fi
 printf '%s@%s\n' "$image" "$digest" > "$dist/titanskies-$version-image-digest.txt"
-cosign sign --yes --key "$COSIGN_KEY" "$image@$digest"
-cosign verify --key packaging/release-cosign.pub "$image@$digest" >/dev/null
 
 (
   cd "$dist"
@@ -68,5 +115,13 @@ cosign verify --key packaging/release-cosign.pub "$image@$digest" >/dev/null
 cosign sign-blob --yes --key "$COSIGN_KEY" --output-signature "$dist/SHA256SUMS.sig" "$dist/SHA256SUMS"
 cosign verify-blob --key packaging/release-cosign.pub --signature "$dist/SHA256SUMS.sig" "$dist/SHA256SUMS" >/dev/null
 
-gh release create "$tag" "$dist"/* --verify-tag --latest --title "TitanSkies $version" --notes-file "docs/releases/$tag.md"
+[ "$release_state" = true ] || gh release create "$tag" --draft --verify-tag --title "TitanSkies $version" --notes-file "docs/releases/$tag.md"
+gh release edit "$tag" --draft=true --title "TitanSkies $version" --notes-file "docs/releases/$tag.md"
+gh release upload "$tag" "$dist"/* --clobber
+expected_assets=$(for asset in "$dist"/*; do basename "$asset"; done | LC_ALL=C sort)
+actual_assets=$(gh release view "$tag" --json assets --jq '.assets[].name' | LC_ALL=C sort) \
+  || fail "could not inspect draft release assets"
+[ "$actual_assets" = "$expected_assets" ] || fail "draft release assets do not match generated artifacts"
+verify_remote_tag
+gh release edit "$tag" --draft=false --latest
 printf 'Published TitanSkies %s and %s@%s\n' "$version" "$image" "$digest"

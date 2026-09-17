@@ -85,6 +85,17 @@ it("reports a publication unhealthy when the lowercase AQHI asset is missing", a
 
 it("returns all source states, coverage, and monitoring query validation without private errors", async () => {
   const directory = await demoPublication();
+  const initialPointer = JSON.parse(await readFile(path.join(directory, "context/latest.json"), "utf8"));
+  const initialManifestPath = path.join(directory, initialPointer.manifestPath);
+  const initialManifest = JSON.parse(await readFile(initialManifestPath, "utf8"));
+  initialManifest.sources.hms = { ...initialManifest.sources.airnow };
+  initialManifest.sources.firms = { ...initialManifest.sources.wfigs };
+  const deployed = JSON.stringify(initialManifest);
+  const deployedHash = createHash("sha256").update(deployed).digest("hex").slice(0, 20);
+  initialPointer.manifestPath = `context/manifests/${deployedHash}.json`;
+  initialPointer.manifestUrl = `/data/${initialPointer.manifestPath}`;
+  await writeFile(path.join(directory, initialPointer.manifestPath), deployed);
+  await writeFile(path.join(directory, "context/latest.json"), JSON.stringify(initialPointer));
   vi.setSystemTime(new Date("2024-07-15T20:10:00Z"));
   const response = await GET(new Request("http://localhost/api/context-health?expectedVersion=8&expectedSource=airnow&expectedSource=hrrr"));
   const body = await response.json();

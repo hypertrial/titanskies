@@ -490,7 +490,7 @@ def test_container_services_share_one_hardened_image_and_local_port() -> None:
     assert "data:/var/lib/titanskies:ro" in compose
 
 
-def test_manual_release_is_multiarch_offline_signed_and_immutable() -> None:
+def test_manual_release_has_multiarch_offline_signing_contract() -> None:
     release = (ROOT / "scripts/release").read_text(encoding="utf-8")
     updater = (ROOT / "scripts/update-user").read_text(encoding="utf-8")
     verifier = (ROOT / "scripts/verify_release.sh").read_text(encoding="utf-8")
@@ -503,10 +503,9 @@ def test_manual_release_is_multiarch_offline_signed_and_immutable() -> None:
     assert "cosign sign-blob" in release and "cosign verify-blob" in release
     assert "--format '{{json .Manifest}}'" in release
     assert 'gitleaks git --redact --log-opts="--all"' in verifier
-    assert 'gh release view "$tag"' in release
-    assert 'docker buildx imagetools inspect "$image:$tag"' in release
-    assert 'container image $image:$tag already exists' in release
-    assert 'gh release create "$tag"' in release
+    assert "org.opencontainers.image.revision" in release
+    assert 'gh release create "$tag" --draft' in release
+    assert 'gh release edit "$tag" --draft=false --latest' in release
     assert "./scripts/verify-container" in verifier
     assert '"$#" -eq 3' in updater
     assert 'cosign verify-blob --key "$public_key"' in updater
@@ -696,10 +695,24 @@ def test_public_release_check_scans_all_runtime_hosts(tmp_path: Path) -> None:
     shutil.copy2(ROOT / "scripts/check_public_release.py", root / "scripts/check_public_release.py")
     shutil.copytree(ROOT / "shared", root / "shared")
     shutil.copytree(ROOT / "ingest", root / "ingest")
+    (root / "src/data").mkdir(parents=True)
+    (root / "src/data/contextSchema.ts").write_text(
+        'const retired = new Set(["firms", "hms"]);\n', encoding="utf-8",
+    )
     assert not (ROOT / ".github").exists()
     shutil.copy2(ROOT / "Dockerfile", root / "Dockerfile")
     check = [sys.executable, str(root / "scripts/check_public_release.py")]
     assert subprocess.run(check, cwd=root, capture_output=True, text=True).returncode == 0
+
+    (root / "src/data/contextSchema.ts").write_text(
+        'const retired = new Set(["firms", "hms"]);\nconst hms = true;\n', encoding="utf-8",
+    )
+    retired_reference = subprocess.run(check, cwd=root, capture_output=True, text=True)
+    assert retired_reference.returncode == 1
+    assert "retired integration reference" in retired_reference.stderr
+    (root / "src/data/contextSchema.ts").write_text(
+        'const retired = new Set(["firms", "hms"]);\n', encoding="utf-8",
+    )
 
     (root / ".pad.toml").write_text('workspace = "titanskies-smoke-engineering"\n', encoding="utf-8")
     assert subprocess.run(check, cwd=root, capture_output=True, text=True).returncode == 0

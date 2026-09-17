@@ -175,6 +175,7 @@ const AQHI_CATEGORIES = new Set(["low", "moderate", "high", "very high"]);
 const AIR_SOURCES = new Set<AirMonitorSource>(["airnow", "bcair", "sinaica", "aqhi"]);
 const INDEX_SYSTEMS = new Set<AirIndexSystem>(["us-epa-pm25-aqi", "ca-aqhi"]);
 const AQI_METHODS = new Set<AqiMethod>(["provider", "epa-nowcast-2024"]);
+const RETIRED_SOURCE_KEYS = new Map<number, ReadonlySet<string>>([[8, new Set(["firms", "hms"])]]);
 const AQHI_COUNT_VERSION = "eccc-aqhi-latest-v1";
 export const MONITOR_MATCH_METERS = 150;
 export const LOCAL_FRESH_MS = 2 * 60 * 60 * 1000;
@@ -202,6 +203,13 @@ const gridForVersion = (version: number): typeof contract.detailGrid | null => {
   const selected = CONTRACTS.get(version);
   return selected && "detailGrid" in selected ? selected.detailGrid as typeof contract.detailGrid : null;
 };
+const isSourceState = (value: unknown): value is SourceState => isRecord(value)
+  && SOURCE_STATUSES.has(value.status as ContextSourceStatus)
+  && isIso(value.checkedAt)
+  && isUrl(value.provenance)
+  && (value.observedAt === null || isIso(value.observedAt))
+  && (value.error === null || typeof value.error === "string")
+  && (value.perimeterObservedAt === undefined || isIso(value.perimeterObservedAt));
 
 const isFiniteCoordinate = (lon: unknown, lat: unknown) => Number.isFinite(lon) && Number.isFinite(lat)
   && inDisplayBounds(Number(lon), Number(lat));
@@ -277,20 +285,12 @@ export function isContextManifest(value: unknown): value is ContextManifest {
   if (!item.bounds || item.bounds.west !== CONTEXT_BOUNDS.west || item.bounds.south !== CONTEXT_BOUNDS.south
     || item.bounds.east !== CONTEXT_BOUNDS.east || item.bounds.north !== CONTEXT_BOUNDS.north) return false;
   const requiredSources = capabilities.requiredSources as ContextSource[];
-  if (!requiredSources.every((name) => {
-    const state = item.sources?.[name];
-    return Boolean(state && SOURCE_STATUSES.has(state.status) && isIso(state.checkedAt) && isUrl(state.provenance)
-      && (state.observedAt === null || isIso(state.observedAt)) && (state.error === null || typeof state.error === "string")
-      && (state.perimeterObservedAt === undefined || isIso(state.perimeterObservedAt)));
-  })) return false;
+  if (!requiredSources.every((name) => isSourceState(item.sources?.[name]))) return false;
   const allowedSources = capabilities.allowedSources as ContextSource[];
-  if (Object.keys(item.sources).some((name) => !allowedSources.includes(name as ContextSource))) return false;
-  for (const name of allowedSources.filter((name) => !requiredSources.includes(name))) {
-    const state = item.sources?.[name];
-    if (!state) continue;
-    if (!SOURCE_STATUSES.has(state.status) || !isIso(state.checkedAt) || !isUrl(state.provenance)
-      || (state.observedAt !== null && !isIso(state.observedAt)) || (state.error !== null && typeof state.error !== "string")
-      || (state.perimeterObservedAt !== undefined && !isIso(state.perimeterObservedAt))) return false;
+  const retiredSources = RETIRED_SOURCE_KEYS.get(version) ?? new Set<string>();
+  for (const [name, state] of Object.entries(item.sources)) {
+    if (!allowedSources.includes(name as ContextSource) && !retiredSources.has(name)) return false;
+    if (!isSourceState(state)) return false;
   }
   if (item.displayBounds && (item.displayBounds.west !== expected.displayBounds.west || item.displayBounds.south !== expected.displayBounds.south
     || item.displayBounds.east !== expected.displayBounds.east || item.displayBounds.north !== expected.displayBounds.north)) return false;

@@ -8,6 +8,6 @@ Releases are manual. No GitHub Actions workflow or signing credential belongs in
 4. Keep the private Cosign key outside Git and set `COSIGN_KEY` to its path. It must match `packaging/release-cosign.pub`.
 5. From a clean checkout at the tag, run `./scripts/release`.
 
-The command runs every release gate, creates the versioned source archive, SBOM, third-party notices, checksums and checksum signature, builds and pushes the two-architecture GHCR manifest, signs its immutable digest, verifies both signatures, and creates an immutable GitHub Release. It refuses an existing release rather than overwriting assets.
+The command verifies the private key before publishing, runs every release gate, creates the versioned source archive, SBOM, third-party notices, checksums and checksum signature, builds and pushes the two-architecture GHCR manifest, signs its immutable digest, and creates an immutable GitHub Release. A failed run may be rerun: it reuses an existing image only when its signature and OCI annotations match the exact tagged commit, and it resumes only an unpublished draft release whose assets match the generated release set. It never overwrites a published release.
 
 Before announcing the release, inspect the published manifest platforms, verify its Cosign signature, test both architectures on representative or emulated hosts, run the Compose smoke, and complete the Omarchy install/update/rollback/uninstall acceptance sequence.

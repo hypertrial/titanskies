@@ -14,6 +14,9 @@ REGISTRY = json.loads((ROOT / "shared/data-sources.json").read_text(encoding="ut
 CONTRACT = json.loads((ROOT / "shared/context-contract-v8.json").read_text(encoding="utf-8"))
 EXPECTED = {"firework", "hrrr", "airnow", "bcair", "sinaica", "aqhi", "wfigs", "cwfis"}
 RETIRED = {"tempo", "hms", "firms"}
+RETIRED_COMPATIBILITY = {
+    "src/data/contextSchema.ts": 'new set(["firms", "hms"])',
+}
 RETIRED_HOSTS = {
     "cmr.earthdata.nasa.gov",
     "firms.modaps.eosdis.nasa.gov",
@@ -153,6 +156,11 @@ for relative in sorted(release_files):
     if path.suffix.lower() not in {".py", ".ts", ".tsx", ".js", ".mjs", ".json", ".yml", ".yaml", ".sh"}:
         continue
     text = path.read_text(encoding="utf-8", errors="ignore").lower()
+    compatibility = RETIRED_COMPATIBILITY.get(relative)
+    if compatibility:
+        if text.count(compatibility) != 1:
+            fail(f"retired compatibility allowlist changed in {relative}")
+        text = text.replace(compatibility, "")
     if any(re.search(rf"(?<![a-z0-9]){term}(?![a-z0-9])", text) for term in RETIRED):
         fail(f"retired integration reference in {relative}")
     if ("@vercel/" in text or "vercel-storage.com" in text or "blob_read_write_token" in text) and relative not in VERCEL_ADAPTER_FILES:

@@ -39,7 +39,7 @@ describe("v8 context", () => {
     expect(visibleForecastRun(manifest).detailGrid).toEqual(CONTEXT_DETAIL_GRID);
   });
 
-  it("rejects corrupt, incomplete, and legacy-shaped publications", () => {
+  it("accepts valid retired v8 source states but rejects unknown or corrupt sources", () => {
     const missing = structuredClone(manifest);
     delete missing.sources.airnow;
     expect(isContextManifest(missing)).toBe(false);
@@ -51,7 +51,14 @@ describe("v8 context", () => {
     expect(isContextManifest(legacy)).toBe(false);
     const retired = structuredClone(manifest);
     retired.sources.hms = { ...retired.sources.airnow };
-    expect(isContextManifest(retired)).toBe(false);
+    retired.sources.firms = { ...retired.sources.wfigs };
+    expect(isContextManifest(retired)).toBe(true);
+    const corruptRetired = structuredClone(retired);
+    corruptRetired.sources.hms.checkedAt = "invalid";
+    expect(isContextManifest(corruptRetired)).toBe(false);
+    const unknown = structuredClone(manifest);
+    unknown.sources.other = { ...unknown.sources.airnow };
+    expect(isContextManifest(unknown)).toBe(false);
     for (const contributors of [{}, [{ source: "hrrr" }, { source: "hrrr" }], [{ source: "other" }], [{ source: "hrrr", modelRun: "invalid" }]]) {
       const invalid = structuredClone(manifest);
       invalid.forecast.frames[0].contributors = contributors;
@@ -78,9 +85,12 @@ describe("v8 context", () => {
   });
 
   it("loads a pointer and matching manifest", async () => {
+    const deployed = structuredClone(manifest);
+    deployed.sources.hms = { ...deployed.sources.airnow };
+    deployed.sources.firms = { ...deployed.sources.wfigs };
     const fetchMock = vi.fn()
       .mockResolvedValueOnce({ ok: true, headers: { get: () => "application/json" }, json: async () => ({ version: 8, manifestUrl: "/data/context/manifests/abc.json", updatedAt: manifest.generatedAt }) })
-      .mockResolvedValueOnce({ ok: true, headers: { get: () => "application/json" }, json: async () => manifest });
+      .mockResolvedValueOnce({ ok: true, headers: { get: () => "application/json" }, json: async () => deployed });
     vi.stubGlobal("fetch", fetchMock);
     await expect(loadContext()).resolves.toMatchObject({ version: 8, mode: "demo" });
     expect(fetchMock).toHaveBeenCalledTimes(2);
