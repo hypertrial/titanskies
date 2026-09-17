@@ -443,7 +443,6 @@ export function forecastRun(manifest: ContextManifest, model: ForecastModelId): 
 }
 
 export const UI_FORECAST_HORIZON_HOURS = 24;
-export const V7_UI_FORECAST_HORIZON_HOURS = 36;
 
 export function uiForecastHorizonHours(manifest: ContextManifest): number {
   return contextCapabilities(manifest.version)?.outlookHorizonHours ?? UI_FORECAST_HORIZON_HOURS;
