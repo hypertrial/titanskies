@@ -30,16 +30,18 @@ def test_ci_is_read_only_and_mac_is_manual_only() -> None:
     assert "workflow_dispatch:" in ci
     assert "github.event_name == 'workflow_dispatch'" in ci
     assert "mac_label" not in ci
-    assert "runs-on: titanskies-release-${{ github.run_id }}-${{ github.run_attempt }}" in ci
-    assert ci.count("titanskies-release-${{ github.run_id }}-${{ github.run_attempt }}") == 1
-    assert "environment: trusted-mac" in ci
-    assert ci.count("runs-on:") == 2
+    assert "name: ${{ inputs.runner == 'mac' && 'verify-mac' || 'verify-hosted' }}" in ci
+    assert "format('titanskies-release-{0}-{1}', github.run_id, github.run_attempt)" in ci
+    assert ci.count("format('titanskies-release-{0}-{1}', github.run_id, github.run_attempt)") == 1
+    assert "environment: ${{ inputs.runner == 'mac' && 'trusted-mac' || 'release-verification' }}" in ci
+    assert ci.count("runs-on:") == 1
     assert "self-hosted" not in ci
-    assert ci.count("./scripts/bootstrap-ci-tools") == 2
-    assert ci.count("./scripts/verify_release.sh") == 2
+    assert ci.count("./scripts/bootstrap-ci-tools") == 1
+    assert ci.count("./scripts/verify_release.sh") == 1
+    assert ci.count("if: inputs.runner != 'mac'") == 1
     assert "brew install" not in ci
-    mac_job = ci.split("verify-mac:", 1)[1]
-    assert "pull_request" not in mac_job
+    assert "verify-hosted:" not in ci
+    assert "verify-mac:" not in ci
 
 
 def test_release_has_minimal_permissions_and_delegates_to_one_script() -> None:
@@ -59,6 +61,7 @@ def test_release_has_minimal_permissions_and_delegates_to_one_script() -> None:
     assert release.count("./scripts/bootstrap-ci-tools") == 1
     assert release.count("./scripts/release verify") == 1
     assert release.count("./scripts/release publish") == 1
+    assert release.count("if: inputs.runner != 'mac'") == 1
     assert "brew install" not in release
     for duplicated_policy in ("docker buildx build", "cosign sign ", "gh release create"):
         assert duplicated_policy not in release
@@ -84,6 +87,7 @@ def test_release_grants_write_and_oidc_only_to_publish_after_verified_artifact()
     assert "permissions:\n      contents: write\n      packages: write\n      id-token: write\n" in publish
     assert "actions/download-artifact@" in publish
     assert "name: ${{ needs.verify.outputs.artifact_name }}" in publish
-    assert "path: artifacts" in publish
+    assert "path: ${{ runner.temp }}/release-artifacts" in publish
     assert "TITANSKIES_VERIFIED_SHA: ${{ needs.verify.outputs.revision }}" in publish
+    assert "TITANSKIES_RELEASE_ARTIFACTS: ${{ runner.temp }}/release-artifacts" in publish
     assert "environment: release" in publish

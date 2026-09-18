@@ -99,8 +99,16 @@ def _release_checkout(tmp_path: Path) -> tuple[Path, dict[str, str], Path, Path]
         '      [ "${FAKE_MISSING_PROVENANCE:-0}" != 1 ] || exit 1\n'
         '      materials="[{\\"uri\\":\\"https://github.com/hypertrial/titanskies\\"}]"\n'
         '      [ "${FAKE_INVALID_PROVENANCE:-0}" != 1 ] || materials="[]"\n'
+        '      completeness=true\n'
+        '      [ "${FAKE_INCOMPLETE_PROVENANCE:-0}" != 1 ] || completeness=false\n'
         '      vcs="{\\"source\\":\\"${FAKE_PROVENANCE_SOURCE:-https://github.com/hypertrial/titanskies}\\",\\"revision\\":\\"${FAKE_PROVENANCE_REVISION:-$FAKE_REVISION}\\"}"\n'
-        '      printf "{\\"linux/amd64\\":{\\"SLSA\\":{\\"buildType\\":\\"https://mobyproject.org/buildkit@v1\\",\\"invocation\\":{\\"environment\\":{\\"platform\\":\\"linux/amd64\\"}},\\"metadata\\":{\\"completeness\\":{\\"parameters\\":true},\\"https://mobyproject.org/buildkit@v1#metadata\\":{\\"vcs\\":%s}},\\"materials\\":%s}},\\"linux/arm64\\":{\\"SLSA\\":{\\"buildType\\":\\"https://mobyproject.org/buildkit@v1\\",\\"invocation\\":{\\"environment\\":{\\"platform\\":\\"linux/arm64\\"}},\\"metadata\\":{\\"completeness\\":{\\"parameters\\":true},\\"https://mobyproject.org/buildkit@v1#metadata\\":{\\"vcs\\":%s}},\\"materials\\":%s}}}\\n" "$vcs" "$materials" "$vcs" "$materials"\n'
+        '      if [ "${FAKE_LEGACY_PROVENANCE:-0}" = 1 ]; then\n'
+        '        printf "{\\"linux/amd64\\":{\\"SLSA\\":{\\"buildType\\":\\"https://mobyproject.org/buildkit@v1\\",\\"invocation\\":{\\"environment\\":{\\"platform\\":\\"linux/amd64\\"}},\\"metadata\\":{\\"completeness\\":{\\"parameters\\":%s},\\"https://mobyproject.org/buildkit@v1#metadata\\":{\\"vcs\\":%s}},\\"materials\\":%s}},\\"linux/arm64\\":{\\"SLSA\\":{\\"buildType\\":\\"https://mobyproject.org/buildkit@v1\\",\\"invocation\\":{\\"environment\\":{\\"platform\\":\\"linux/arm64\\"}},\\"metadata\\":{\\"completeness\\":{\\"parameters\\":%s},\\"https://mobyproject.org/buildkit@v1#metadata\\":{\\"vcs\\":%s}},\\"materials\\":%s}}}\\n" "$completeness" "$vcs" "$materials" "$completeness" "$vcs" "$materials"\n'
+        '      else\n'
+        '        revision="${FAKE_PROVENANCE_REVISION:-$FAKE_REVISION}"\n'
+        '        source="${FAKE_PROVENANCE_SOURCE:-https://github.com/hypertrial/titanskies}"\n'
+        '        printf "{\\"linux/amd64\\":{\\"SLSA\\":{\\"buildDefinition\\":{\\"buildType\\":\\"https://github.com/moby/buildkit/blob/master/docs/attestations/slsa-definitions.md\\",\\"externalParameters\\":{\\"request\\":{\\"root\\":{\\"request\\":{\\"args\\":{\\"vcs:revision\\":\\"%s\\",\\"vcs:source\\":\\"%s\\",\\"label:org.opencontainers.image.revision\\":\\"%s\\",\\"label:org.opencontainers.image.source\\":\\"%s\\"}}}}},\\"internalParameters\\":{\\"buildConfig\\":{\\"llbDefinition\\":[{\\"op\\":{\\"platform\\":{\\"OS\\":\\"linux\\",\\"Architecture\\":\\"amd64\\"}}}]}},\\"resolvedDependencies\\":%s},\\"runDetails\\":{\\"metadata\\":{\\"buildkit_completeness\\":{\\"request\\":%s},\\"buildkit_metadata\\":{\\"source\\":{},\\"vcs\\":%s}}}}},\\"linux/arm64\\":{\\"SLSA\\":{\\"buildDefinition\\":{\\"buildType\\":\\"https://github.com/moby/buildkit/blob/master/docs/attestations/slsa-definitions.md\\",\\"externalParameters\\":{\\"request\\":{\\"root\\":{\\"request\\":{\\"args\\":{\\"vcs:revision\\":\\"%s\\",\\"vcs:source\\":\\"%s\\",\\"label:org.opencontainers.image.revision\\":\\"%s\\",\\"label:org.opencontainers.image.source\\":\\"%s\\"}}}}},\\"internalParameters\\":{\\"buildConfig\\":{\\"llbDefinition\\":[{\\"op\\":{\\"platform\\":{\\"OS\\":\\"linux\\",\\"Architecture\\":\\"arm64\\"}}}]}},\\"resolvedDependencies\\":%s},\\"runDetails\\":{\\"metadata\\":{\\"buildkit_completeness\\":{\\"request\\":%s},\\"buildkit_metadata\\":{\\"source\\":{},\\"vcs\\":%s}}}}}}\\n" "$revision" "$source" "$revision" "$source" "$materials" "$completeness" "$vcs" "$revision" "$source" "$revision" "$source" "$materials" "$completeness" "$vcs"\n'
+        '      fi\n'
         '      exit 0 ;;\n'
         '  esac\n'
         '  case "$reference" in\n'
@@ -372,7 +380,15 @@ def test_release_rejects_unbound_attestation_subject_and_invalid_predicates(
             "BuildKit provenance is invalid or missing",
         ),
         (
+            {"FAKE_PROVENANCE_REVISION": f"{REVISION}-dirty"},
+            "BuildKit provenance is invalid or missing",
+        ),
+        (
             {"FAKE_PROVENANCE_SOURCE": "https://github.com/attacker/titanskies"},
+            "BuildKit provenance is invalid or missing",
+        ),
+        (
+            {"FAKE_INCOMPLETE_PROVENANCE": "1"},
             "BuildKit provenance is invalid or missing",
         ),
     )
@@ -386,6 +402,47 @@ def test_release_rejects_unbound_attestation_subject_and_invalid_predicates(
         assert not (state / "version").exists()
         assert not (state / "latest").exists()
         assert not (state / "release").exists()
+
+
+def test_release_accepts_legacy_buildkit_provenance(tmp_path: Path) -> None:
+    repo, env, state, _ = _release_checkout(tmp_path)
+    result = _run_release(repo, {**env, "FAKE_LEGACY_PROVENANCE": "1"})
+
+    assert result.returncode == 0, result.stderr
+    assert state.joinpath("version").exists()
+    assert state.joinpath("latest").exists()
+    assert state.joinpath("release").exists()
+
+
+def test_release_reads_verified_assets_outside_checkout(tmp_path: Path) -> None:
+    repo, env, state, _ = _release_checkout(tmp_path)
+    verified = tmp_path / "verified-release-assets"
+    verified.mkdir()
+    shutil.move(repo / "artifacts/sbom.cdx.json", verified / "sbom.cdx.json")
+    shutil.move(
+        repo / "artifacts/THIRD_PARTY_NOTICES.md",
+        verified / "THIRD_PARTY_NOTICES.md",
+    )
+
+    result = _run_release(
+        repo,
+        {**env, "TITANSKIES_RELEASE_ARTIFACTS": str(verified)},
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert state.joinpath("release").exists()
+
+
+def test_release_rejects_missing_verified_assets_before_push(tmp_path: Path) -> None:
+    repo, env, state, log = _release_checkout(tmp_path)
+    (repo / "artifacts/sbom.cdx.json").unlink()
+
+    result = _run_release(repo, env)
+
+    assert result.returncode != 0
+    assert "verified CycloneDX SBOM is missing" in result.stderr
+    assert not state.joinpath("digest").exists()
+    assert "docker buildx build" not in _commands(log)
 
 
 def test_release_rejects_mismatched_or_unsigned_existing_version(tmp_path: Path) -> None:
