@@ -32,3 +32,4 @@ npm run build
 npm run benchmark:frontend:run
 npm run test:e2e
 ./scripts/verify-container
+./scripts/verify-container-platforms

@@ -206,6 +206,8 @@ async function sample(page, label, durationMs = 2500, interaction = null) {
     const startedAt = performance.now();
     let previous = startedAt;
     const end = previous + duration;
+    if (timeline instanceof HTMLInputElement) positions.push(timeline.value);
+    mixes.push(explorer?.getAttribute("data-render-mix") ?? "");
     await new Promise((resolve) => {
       const tick = (now) => {
         intervals.push(now - previous);

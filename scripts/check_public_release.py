@@ -40,6 +40,29 @@ VERCEL_ADAPTER_FILES = {
     "src/server/blobData.ts",
     "vercel.json",
 }
+REMOVED_NATIVE_PATHS = {
+    "packaging/release-cosign.pub",
+    "packaging/systemd/titanskies-ingest.service",
+    "packaging/systemd/titanskies-ingest.timer",
+    "packaging/systemd/titanskies-web.service",
+    "packaging/titanskies.desktop",
+    "scripts/install-user",
+    "scripts/uninstall-user",
+    "scripts/update-user",
+}
+USER_FACING_DISTRIBUTION_DOCS = {
+    ".env.example",
+    "PRODUCT.md",
+    "PROJECT_AGENT.md",
+    "README.md",
+    "SECURITY.md",
+    "docs/OPERATIONS.md",
+    "docs/RELEASE.md",
+    "docs/releases/v0.1.0.md",
+}
+RETIRED_NATIVE_INSTRUCTION = re.compile(
+    r"(?i)\b(?:omarchy|systemd|install-user|update-user|uninstall-user|release-cosign|cosign_key)\b"
+)
 
 
 def fail(message: str) -> None:
@@ -141,6 +164,13 @@ if any(Path(relative).name.startswith(".env") and Path(relative).name != ".env.e
     fail("a local environment file is tracked")
 if any(relative.startswith((".local/", "artifacts/", "test-results/", "playwright-report/")) for relative in tracked):
     fail("generated or fetched deployment data is tracked")
+returned_native_paths = sorted(path for path in REMOVED_NATIVE_PATHS if (ROOT / path).exists())
+if returned_native_paths:
+    fail(f"retired native distribution asset is present: {returned_native_paths[0]}")
+for relative in sorted(USER_FACING_DISTRIBUTION_DOCS):
+    path = ROOT / relative
+    if path.is_file() and RETIRED_NATIVE_INSTRUCTION.search(path.read_text(encoding="utf-8", errors="ignore")):
+        fail(f"retired native distribution instruction in {relative}")
 
 for relative in sorted(release_files):
     path = ROOT / relative
@@ -175,7 +205,7 @@ if pad_directory.exists():
     allowed_lock_keys = {"repository", "version", "workspace", "files"}
     if set(lock) - allowed_lock_keys or lock.get("repository") != "titanskies" or not isinstance(lock.get("version"), str):
         fail("Universal Pad lock is invalid")
-    if "workspace" in lock and lock["workspace"] != "titanskies-smoke-engineering":
+    if "workspace" in lock and lock["workspace"] != "titanskies-engineering":
         fail("Universal Pad lock is invalid")
     if "files" in lock:
         expected_files = {

@@ -5,12 +5,36 @@ fail() { printf 'TitanSkies release: %s\n' "$*" >&2; exit 1; }
 root=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 cd "$root"
 
+mode=${1:-publish}
+case "$mode" in
+  verify|publish) ;;
+  *) fail "usage: scripts/release [verify|publish]" ;;
+esac
+
+image=ghcr.io/hypertrial/titanskies
+source_url=https://github.com/hypertrial/titanskies
+oidc_issuer=https://token.actions.githubusercontent.com
+
 verify_remote_tag() {
-  remote_refs=$(git ls-remote origin "refs/tags/$tag" "refs/tags/$tag^{}") || fail "could not inspect origin tag $tag"
+  remote_refs=$(git ls-remote origin "refs/tags/$tag" "refs/tags/$tag^{}") \
+    || fail "could not inspect origin tag $tag"
   remote_tag=$(printf '%s\n' "$remote_refs" | awk -v ref="refs/tags/$tag" '$2 == ref { print $1 }')
   remote_commit=$(printf '%s\n' "$remote_refs" | awk -v ref="refs/tags/$tag^{}" '$2 == ref { print $1 }')
   [ "$remote_tag" = "$local_tag" ] && [ "$remote_commit" = "$revision" ] \
     || fail "origin tag $tag does not match this checkout"
+}
+
+verify_main_history() {
+  git fetch --no-tags origin main || fail "could not refresh origin/main"
+  git merge-base --is-ancestor "$revision" refs/remotes/origin/main \
+    || fail "$tag is not contained in reviewed origin/main history"
+}
+
+inspect_manifest() {
+  reference=$1
+  output=$2
+  docker buildx imagetools inspect --format '{{json .Manifest}}' "$reference" > "$output" \
+    || fail "could not inspect image $reference"
 }
 
 validate_image_manifest() {
@@ -18,110 +42,215 @@ validate_image_manifest() {
     const value = JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8"));
     const platforms = (value.manifests || [])
       .filter((item) => item.platform?.os !== "unknown" && item.platform?.architecture !== "unknown")
-      .map((item) => `${item.platform?.os}/${item.platform?.architecture}`)
+      .map((item) => `${item.platform.os}/${item.platform.architecture}`)
       .sort();
     if (platforms.join(",") !== "linux/amd64,linux/arm64") process.exit(1);
+    const runnableDigests = (value.manifests || [])
+      .filter((item) => item.platform?.os === "linux" && ["amd64", "arm64"].includes(item.platform?.architecture))
+      .map((item) => item.digest)
+      .sort();
+    if (runnableDigests.some((digest) => !/^sha256:[0-9a-f]{64}$/.test(digest || ""))) process.exit(1);
+    const attestedDigests = [...new Set((value.manifests || [])
+      .filter((item) => item.annotations?.["vnd.docker.reference.type"] === "attestation-manifest")
+      .map((item) => item.annotations?.["vnd.docker.reference.digest"]))]
+      .sort();
+    if (JSON.stringify(attestedDigests) !== JSON.stringify(runnableDigests)) process.exit(1);
     if (!/^sha256:[0-9a-f]{64}$/.test(value.digest || "")) process.exit(1);
     const expected = {
       "org.opencontainers.image.revision": process.argv[2],
       "org.opencontainers.image.version": process.argv[3],
       "org.opencontainers.image.source": process.argv[4],
     };
-    if (Object.entries(expected).some(([key, expectedValue]) => value.annotations?.[key] !== expectedValue)) process.exit(1);
-  ' "$1" "$revision" "$version" "$source" || fail "published image manifest does not match this release"
+    if (Object.entries(expected).some(([key, expectedValue]) => value.annotations?.[key] !== expectedValue)) {
+      process.exit(1);
+    }
+  ' "$1" "$revision" "$version" "$source_url" \
+    || fail "published image manifest does not match this release"
+}
+
+manifest_digest() {
+  node -e '
+    const value = JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8"));
+    process.stdout.write(value.digest || "");
+  ' "$1"
+}
+
+validate_attestation_json() {
+  node -e '
+    const root = JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8"));
+    const kind = process.argv[2];
+    for (const platform of ["linux/amd64", "linux/arm64"]) {
+      const value = root?.[platform];
+      if (!value || typeof value !== "object") process.exit(1);
+      if (kind === "sbom") {
+        const spdx = value.SPDX;
+        if (spdx?.SPDXID !== "SPDXRef-DOCUMENT" || !/^SPDX-/.test(spdx?.spdxVersion || "")) process.exit(1);
+        if (!Array.isArray(spdx.packages) || spdx.packages.length === 0) process.exit(1);
+      } else {
+        const slsa = value.SLSA;
+        if (slsa?.buildType !== "https://mobyproject.org/buildkit@v1") process.exit(1);
+        if (slsa?.invocation?.environment?.platform !== platform) process.exit(1);
+        if (slsa?.metadata?.completeness?.parameters !== true) process.exit(1);
+        if (!Array.isArray(slsa?.materials) || slsa.materials.length === 0) process.exit(1);
+        const vcs = slsa?.metadata?.["https://mobyproject.org/buildkit@v1#metadata"]?.vcs;
+        const normalizeSource = (source) => String(source || "")
+          .replace(/^git@github\.com:/, "https://github.com/")
+          .replace(/\.git$/, "");
+        if (vcs?.revision !== process.argv[3]) process.exit(1);
+        if (normalizeSource(vcs?.source) !== process.argv[4]) process.exit(1);
+      }
+    }
+  ' "$1" "$2" "$revision" "$source_url" || fail "$3 is invalid or missing from the image"
+}
+
+verify_attestations() {
+  reference=$1
+  docker buildx imagetools inspect --format '{{json .SBOM}}' "$reference" > "$stage/image-sbom.json" \
+    || fail "could not inspect BuildKit SBOM"
+  docker buildx imagetools inspect --format '{{json .Provenance}}' "$reference" > "$stage/image-provenance.json" \
+    || fail "could not inspect BuildKit provenance"
+  validate_attestation_json "$stage/image-sbom.json" sbom "BuildKit SBOM"
+  validate_attestation_json "$stage/image-provenance.json" provenance "BuildKit provenance"
+}
+
+verify_signature() {
+  cosign verify \
+    --certificate-identity "$workflow_identity" \
+    --certificate-oidc-issuer "$oidc_issuer" \
+    "$image@$digest" >/dev/null \
+    || fail "image signature does not match the release workflow identity"
+}
+
+verify_anonymous_version() {
+  anonymous_config=$(mktemp -d "${TMPDIR:-/tmp}/titanskies-anonymous.XXXXXX")
+  if ! DOCKER_CONFIG=$anonymous_config docker buildx imagetools inspect "$image:$tag" >/dev/null 2>&1; then
+    rm -rf "$anonymous_config"
+    fail "$image:$tag is not anonymously readable; make the linked GHCR package public, then rerun this tag workflow"
+  fi
+  rm -rf "$anonymous_config"
 }
 
 [ -z "$(git status --porcelain --untracked-files=all)" ] || fail "checkout must be clean"
 version=$(node -p 'require("./package.json").version')
+printf '%s' "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$' || fail "package version must be X.Y.Z"
 tag=v$version
 [ "$(git describe --tags --exact-match 2>/dev/null || true)" = "$tag" ] || fail "HEAD must be tagged $tag"
 [ "$(git cat-file -t "refs/tags/$tag" 2>/dev/null || true)" = tag ] || fail "$tag must be an annotated tag"
 revision=$(git rev-parse HEAD)
 local_tag=$(git rev-parse "refs/tags/$tag")
 [ "$(git rev-parse "$tag^{}")" = "$revision" ] || fail "$tag does not point to HEAD"
-[ -n "${COSIGN_KEY:-}" ] && [ -f "$COSIGN_KEY" ] || fail "COSIGN_KEY must name the offline private key"
-for command in docker cosign gh node npm; do command -v "$command" >/dev/null 2>&1 || fail "$command is required"; done
-stage=$(mktemp -d "${TMPDIR:-/tmp}/titanskies-release.XXXXXX")
-trap 'rm -rf "$stage"' EXIT HUP INT TERM
-printf 'TitanSkies release key check\n' > "$stage/key-check"
-cosign sign-blob --yes --key "$COSIGN_KEY" --tlog-upload=false --output-signature "$stage/key-check.sig" "$stage/key-check" >/dev/null
-cosign verify-blob --key packaging/release-cosign.pub --signature "$stage/key-check.sig" "$stage/key-check" >/dev/null \
-  || fail "COSIGN_KEY does not match packaging/release-cosign.pub"
-gh repo view hypertrial/titanskies --json visibility --jq .visibility | grep -qx PUBLIC || fail "repository must be public"
-release_json=$(gh release list --limit 1000 --json tagName,isDraft) || fail "could not inspect GitHub Releases"
-release_state=$(printf '%s' "$release_json" | node -e '
-  const releases = JSON.parse(require("node:fs").readFileSync(0, "utf8"));
-  const release = releases.find((item) => item.tagName === process.argv[1]);
-  if (release) process.stdout.write(String(release.isDraft));
-' "$tag") || fail "invalid GitHub Release response"
-[ "$release_state" != false ] || fail "published GitHub Release $tag already exists"
-image=ghcr.io/hypertrial/titanskies
-source=https://github.com/hypertrial/titanskies
-verify_remote_tag
 
+[ "${GITHUB_ACTIONS:-}" = true ] || fail "GitHub Actions context is required"
+[ "${GITHUB_REPOSITORY:-}" = hypertrial/titanskies ] || fail "unexpected GitHub repository"
+[ "${GITHUB_REF:-}" = "refs/tags/$tag" ] || fail "workflow ref must be the exact release tag"
+[ "${GITHUB_REF_NAME:-}" = "$tag" ] || fail "workflow ref name must match the release tag"
+[ "${GITHUB_SHA:-}" = "$revision" ] || fail "workflow revision does not match the release tag"
+[ "${GITHUB_EVENT_NAME:-}" = push ] || [ "${GITHUB_EVENT_NAME:-}" = workflow_dispatch ] \
+  || fail "release must be a tag push or trusted manual dispatch"
+workflow_identity="$source_url/.github/workflows/release.yml@refs/tags/$tag"
+
+for command in docker node; do
+  command -v "$command" >/dev/null 2>&1 || fail "$command is required"
+done
+
+verify_remote_tag
+verify_main_history
 builder=$(docker buildx inspect --bootstrap 2>&1) || fail "Docker Buildx is unavailable"
 printf '%s\n' "$builder" | grep -q 'linux/amd64' || fail "Buildx lacks linux/amd64"
 printf '%s\n' "$builder" | grep -q 'linux/arm64' || fail "Buildx lacks linux/arm64"
 
-npm run verify:release
-[ -z "$(git status --porcelain --untracked-files=all)" ] || fail "release gates changed the checkout"
+if [ "$mode" = verify ]; then
+  command -v npm >/dev/null 2>&1 || fail "npm is required"
+  npm run verify:release
+  [ -z "$(git status --porcelain --untracked-files=all)" ] || fail "release gates changed the checkout"
+  verify_remote_tag
+  verify_main_history
+  if [ -n "${GITHUB_OUTPUT:-}" ]; then
+    printf 'revision=%s\n' "$revision" >> "$GITHUB_OUTPUT"
+  fi
+  printf 'Verified TitanSkies %s at %s\n' "$version" "$revision"
+  exit 0
+fi
+
+[ "${TITANSKIES_VERIFIED_SHA:-}" = "$revision" ] \
+  || fail "publish job is not paired with verification of this exact revision"
+[ -n "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" ] && [ -n "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}" ] \
+  || fail "GitHub Actions OIDC token endpoint is unavailable"
+[ -n "${GH_TOKEN:-}" ] || fail "GH_TOKEN is required"
+for command in cosign gh; do
+  command -v "$command" >/dev/null 2>&1 || fail "$command is required"
+done
+
+stage=$(mktemp -d "${TMPDIR:-/tmp}/titanskies-release.XXXXXX")
+trap 'rm -rf "$stage"' EXIT HUP INT TERM
+
+gh repo view hypertrial/titanskies --json visibility --jq .visibility | grep -qx PUBLIC \
+  || fail "repository must be public"
+release_json=$(gh release list --limit 1000 --json tagName) || fail "could not inspect GitHub Releases"
+printf '%s' "$release_json" | node -e '
+  const releases = JSON.parse(require("node:fs").readFileSync(0, "utf8"));
+  if (releases.some((item) => item.tagName === process.argv[1])) process.exit(1);
+' "$tag" || fail "GitHub Release $tag already exists and will not be overwritten"
+
+version_manifest=$stage/version-manifest.json
+if docker buildx imagetools inspect --format '{{json .Manifest}}' "$image:$tag" > "$version_manifest" 2>/dev/null; then
+  validate_image_manifest "$version_manifest"
+  digest=$(manifest_digest "$version_manifest")
+  verify_signature
+  verify_attestations "$image@$digest"
+else
+  BUILDX_GIT_LABELS=full BUILDX_GIT_CHECK_DIRTY=1 docker buildx build \
+    --platform linux/amd64,linux/arm64 \
+    --annotation "index:org.opencontainers.image.source=$source_url" \
+    --annotation "index:org.opencontainers.image.revision=$revision" \
+    --annotation "index:org.opencontainers.image.version=$version" \
+    --provenance=mode=max \
+    --sbom=true \
+    --output "type=image,name=$image,push-by-digest=true,name-canonical=true,push=true" \
+    --metadata-file "$stage/build-metadata.json" \
+    .
+  digest=$(node -e '
+    const value = JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8"));
+    const digest = value["containerimage.digest"];
+    if (!/^sha256:[0-9a-f]{64}$/.test(digest || "")) process.exit(1);
+    process.stdout.write(digest);
+  ' "$stage/build-metadata.json") || fail "Buildx did not report a valid image digest"
+  inspect_manifest "$image@$digest" "$stage/digest-manifest.json"
+  validate_image_manifest "$stage/digest-manifest.json"
+  [ "$(manifest_digest "$stage/digest-manifest.json")" = "$digest" ] || fail "built image digest changed"
+  verify_attestations "$image@$digest"
+  cosign sign --yes "$image@$digest"
+  verify_signature
+  docker buildx imagetools create --tag "$image:$tag" "$image@$digest"
+  inspect_manifest "$image:$tag" "$version_manifest"
+  validate_image_manifest "$version_manifest"
+  [ "$(manifest_digest "$version_manifest")" = "$digest" ] || fail "version tag digest changed"
+  verify_signature
+fi
+
+verify_anonymous_version
+docker buildx imagetools create --tag "$image:latest" "$image@$digest"
+inspect_manifest "$image:latest" "$stage/latest-manifest.json"
+validate_image_manifest "$stage/latest-manifest.json"
+[ "$(manifest_digest "$stage/latest-manifest.json")" = "$digest" ] || fail "latest digest differs from the verified version"
 
 dist=$stage/dist
 mkdir -p "$dist"
-archive=$dist/titanskies-$version.tar.gz
-git archive --format=tar --prefix="titanskies-$version/" "$tag" | gzip -9 > "$archive"
-./scripts/run_python.sh scripts/generate_sbom.py "$dist/titanskies-$version-sbom.cdx.json"
+cp artifacts/sbom.cdx.json "$dist/titanskies-$version-sbom.cdx.json"
 cp artifacts/THIRD_PARTY_NOTICES.md "$dist/titanskies-$version-third-party-notices.md"
 cp "docs/releases/$tag.md" "$dist/titanskies-$version-release-notes.md"
-
-if docker buildx imagetools inspect --format '{{json .Manifest}}' "$image:$tag" > "$stage/image-manifest.json" 2>/dev/null; then
-  validate_image_manifest "$stage/image-manifest.json"
-  digest=$(node -e 'process.stdout.write(JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8")).digest)' "$stage/image-manifest.json")
-  cosign verify --key packaging/release-cosign.pub "$image@$digest" >/dev/null \
-    || fail "existing image is not signed by the TitanSkies release key"
-else
-  candidate=$image:release-$revision
-  docker buildx build --platform linux/amd64,linux/arm64 \
-    --annotation "index:org.opencontainers.image.source=$source" \
-    --annotation "index:org.opencontainers.image.revision=$revision" \
-    --annotation "index:org.opencontainers.image.version=$version" \
-    --tag "$candidate" --push .
-  docker buildx imagetools inspect --format '{{json .Manifest}}' "$candidate" > "$stage/image-manifest.json"
-  validate_image_manifest "$stage/image-manifest.json"
-  digest=$(node -e 'process.stdout.write(JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8")).digest)' "$stage/image-manifest.json")
-  cosign sign --yes --key "$COSIGN_KEY" "$image@$digest"
-  cosign verify --key packaging/release-cosign.pub "$image@$digest" >/dev/null
-  docker buildx imagetools create --tag "$image:$tag" "$image@$digest"
-  docker buildx imagetools inspect --format '{{json .Manifest}}' "$image:$tag" > "$stage/image-manifest.json"
-  validate_image_manifest "$stage/image-manifest.json"
-  [ "$(node -e 'process.stdout.write(JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8")).digest)' "$stage/image-manifest.json")" = "$digest" ] \
-    || fail "promoted image digest changed"
-  cosign verify --key packaging/release-cosign.pub "$image@$digest" >/dev/null
-fi
 printf '%s@%s\n' "$image" "$digest" > "$dist/titanskies-$version-image-digest.txt"
 
-(
-  cd "$dist"
-  if command -v sha256sum >/dev/null 2>&1; then
-    sha256sum titanskies-$version.tar.gz titanskies-$version-sbom.cdx.json \
-      titanskies-$version-third-party-notices.md titanskies-$version-release-notes.md \
-      titanskies-$version-image-digest.txt > SHA256SUMS
-  else
-    shasum -a 256 titanskies-$version.tar.gz titanskies-$version-sbom.cdx.json \
-      titanskies-$version-third-party-notices.md titanskies-$version-release-notes.md \
-      titanskies-$version-image-digest.txt > SHA256SUMS
-  fi
-)
-cosign sign-blob --yes --key "$COSIGN_KEY" --output-signature "$dist/SHA256SUMS.sig" "$dist/SHA256SUMS"
-cosign verify-blob --key packaging/release-cosign.pub --signature "$dist/SHA256SUMS.sig" "$dist/SHA256SUMS" >/dev/null
-
-[ "$release_state" = true ] || gh release create "$tag" --draft --verify-tag --title "TitanSkies $version" --notes-file "docs/releases/$tag.md"
-gh release edit "$tag" --draft=true --title "TitanSkies $version" --notes-file "docs/releases/$tag.md"
-gh release upload "$tag" "$dist"/* --clobber
-expected_assets=$(for asset in "$dist"/*; do basename "$asset"; done | LC_ALL=C sort)
-actual_assets=$(gh release view "$tag" --json assets --jq '.assets[].name' | LC_ALL=C sort) \
-  || fail "could not inspect draft release assets"
-[ "$actual_assets" = "$expected_assets" ] || fail "draft release assets do not match generated artifacts"
 verify_remote_tag
-gh release edit "$tag" --draft=false --latest
+verify_main_history
+gh release create "$tag" \
+  "$dist/titanskies-$version-sbom.cdx.json" \
+  "$dist/titanskies-$version-third-party-notices.md" \
+  "$dist/titanskies-$version-release-notes.md" \
+  "$dist/titanskies-$version-image-digest.txt" \
+  --verify-tag \
+  --title "TitanSkies $version" \
+  --notes-file "docs/releases/$tag.md" \
+  --latest
+
 printf 'Published TitanSkies %s and %s@%s\n' "$version" "$image" "$digest"
