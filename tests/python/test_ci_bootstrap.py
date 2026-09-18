@@ -75,6 +75,7 @@ def test_ci_bootstrap_pins_and_verifies_supported_gitleaks_archives() -> None:
     assert "shasum -a 256 --check" in script
     assert "GITHUB_PATH is required" in script
     assert "curl --fail --location --silent --show-error" in script
+    assert "--retry 5 --retry-delay 2 --retry-all-errors" in script
 
 
 @pytest.mark.parametrize(
