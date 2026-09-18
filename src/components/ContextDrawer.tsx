@@ -27,6 +27,11 @@ export function ContextDrawer({ title, eyebrow, children, onClose }: {
 
   useEffect(() => {
     const frame = window.requestAnimationFrame(() => heading.current?.focus());
+    const escape = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      onCloseRef.current(true, "keyboard");
+    };
     const outside = (event: PointerEvent) => {
       if (root.current?.contains(event.target as Node)) return;
       const target = event.target instanceof Element ? event.target : null;
@@ -34,9 +39,11 @@ export function ContextDrawer({ title, eyebrow, children, onClose }: {
       const transfersFocus = Boolean(target?.closest("button, a[href], input, select, textarea, [contenteditable='true'], [tabindex]:not([tabindex='-1'])"));
       onCloseRef.current(!transfersFocus, "pointer");
     };
+    document.addEventListener("keydown", escape);
     document.addEventListener("pointerdown", outside);
     return () => {
       window.cancelAnimationFrame(frame);
+      document.removeEventListener("keydown", escape);
       document.removeEventListener("pointerdown", outside);
     };
   }, []);
@@ -60,11 +67,6 @@ export function ContextDrawer({ title, eyebrow, children, onClose }: {
     role="dialog"
     aria-modal="false"
     aria-labelledby={id}
-    onKeyDown={(event) => {
-      if (event.key !== "Escape") return;
-      event.preventDefault();
-      onClose(true, "keyboard");
-    }}
     data-scroll-more={scrollMore ? "true" : "false"}
   >
     <div className="context-drawer-heading">
