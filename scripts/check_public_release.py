@@ -10,6 +10,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 ROOT = Path(__file__).resolve().parent.parent
+PACKAGE = json.loads((ROOT / "package.json").read_text(encoding="utf-8"))
 REGISTRY = json.loads((ROOT / "shared/data-sources.json").read_text(encoding="utf-8"))
 CONTRACT = json.loads((ROOT / "shared/context-contract-v8.json").read_text(encoding="utf-8"))
 EXPECTED = {"firework", "hrrr", "airnow", "bcair", "sinaica", "aqhi", "wfigs", "cwfis"}
@@ -58,7 +59,7 @@ USER_FACING_DISTRIBUTION_DOCS = {
     "SECURITY.md",
     "docs/OPERATIONS.md",
     "docs/RELEASE.md",
-    "docs/releases/v0.1.0.md",
+    *(path.relative_to(ROOT).as_posix() for path in (ROOT / "docs/releases").glob("v*.md")),
 }
 RETIRED_NATIVE_INSTRUCTION = re.compile(
     r"(?i)\b(?:omarchy|systemd|install-user|update-user|uninstall-user|release-cosign|cosign_key)\b"
@@ -167,6 +168,9 @@ if any(relative.startswith((".local/", "artifacts/", "test-results/", "playwrigh
 returned_native_paths = sorted(path for path in REMOVED_NATIVE_PATHS if (ROOT / path).exists())
 if returned_native_paths:
     fail(f"retired native distribution asset is present: {returned_native_paths[0]}")
+current_release_notes = ROOT / f"docs/releases/v{PACKAGE['version']}.md"
+if not current_release_notes.is_file():
+    fail(f"release notes are missing for v{PACKAGE['version']}")
 for relative in sorted(USER_FACING_DISTRIBUTION_DOCS):
     path = ROOT / relative
     if path.is_file() and RETIRED_NATIVE_INSTRUCTION.search(path.read_text(encoding="utf-8", errors="ignore")):

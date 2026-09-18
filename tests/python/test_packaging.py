@@ -89,8 +89,12 @@ def _release_check_fixture(tmp_path: Path) -> tuple[Path, list[str]]:
     root = tmp_path / "release-check"
     (root / "scripts").mkdir(parents=True)
     shutil.copy2(ROOT / "scripts/check_public_release.py", root / "scripts/check_public_release.py")
+    shutil.copy2(ROOT / "package.json", root / "package.json")
     shutil.copytree(ROOT / "shared", root / "shared")
     shutil.copytree(ROOT / "ingest", root / "ingest")
+    (root / "docs/releases").mkdir(parents=True)
+    version = json.loads((ROOT / "package.json").read_text(encoding="utf-8"))["version"]
+    shutil.copy2(ROOT / f"docs/releases/v{version}.md", root / f"docs/releases/v{version}.md")
     (root / "src/data").mkdir(parents=True)
     (root / "src/data/contextSchema.ts").write_text(
         'const retired = new Set(["firms", "hms"]);\n', encoding="utf-8",
@@ -152,6 +156,17 @@ def test_public_release_check_rejects_returned_native_assets_and_instructions(tm
     instruction_result = subprocess.run(check, cwd=root, capture_output=True, text=True)
     assert instruction_result.returncode == 1
     assert "retired native distribution instruction in README.md" in instruction_result.stderr
+
+
+def test_public_release_check_requires_current_release_notes(tmp_path: Path) -> None:
+    root, check = _release_check_fixture(tmp_path)
+    version = json.loads((root / "package.json").read_text(encoding="utf-8"))["version"]
+    (root / f"docs/releases/v{version}.md").unlink()
+
+    result = subprocess.run(check, cwd=root, capture_output=True, text=True)
+
+    assert result.returncode == 1
+    assert f"release notes are missing for v{version}" in result.stderr
 
 
 def _publication_for_probe(tmp_path: Path) -> tuple[Path, Path, dict, bytes]:
