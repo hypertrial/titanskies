@@ -47,6 +47,7 @@ def test_ci_is_read_only_and_mac_is_manual_only() -> None:
 def test_release_has_minimal_permissions_and_delegates_to_one_script() -> None:
     release = _workflow("release.yml")
     assert "permissions:\n  contents: read\n" in release
+    assert 'COREPACK_ENABLE_AUTO_PIN: "0"' in release
     assert "attestations: write" not in release
     assert "pull_request:" not in release
     assert "branches:" not in release
