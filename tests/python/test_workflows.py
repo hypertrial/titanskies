@@ -30,16 +30,16 @@ def test_ci_is_read_only_and_mac_is_manual_only() -> None:
     assert "workflow_dispatch:" in ci
     assert "github.event_name == 'workflow_dispatch'" in ci
     assert "mac_label" not in ci
-    assert "runs-on: titanskies-release-${{ github.run_id }}-${{ github.run_attempt }}" in ci
-    assert ci.count("titanskies-release-${{ github.run_id }}-${{ github.run_attempt }}") == 1
-    assert "environment: trusted-mac" in ci
-    assert ci.count("runs-on:") == 2
+    assert "format('titanskies-release-{0}-{1}', github.run_id, github.run_attempt)" in ci
+    assert ci.count("format('titanskies-release-{0}-{1}', github.run_id, github.run_attempt)") == 1
+    assert "environment: ${{ inputs.runner == 'mac' && 'trusted-mac' || 'release-verification' }}" in ci
+    assert ci.count("runs-on:") == 1
     assert "self-hosted" not in ci
-    assert ci.count("./scripts/bootstrap-ci-tools") == 2
-    assert ci.count("./scripts/verify_release.sh") == 2
+    assert ci.count("./scripts/bootstrap-ci-tools") == 1
+    assert ci.count("./scripts/verify_release.sh") == 1
     assert "brew install" not in ci
-    mac_job = ci.split("verify-mac:", 1)[1]
-    assert "pull_request" not in mac_job
+    assert "verify-hosted:" not in ci
+    assert "verify-mac:" not in ci
 
 
 def test_release_has_minimal_permissions_and_delegates_to_one_script() -> None:
