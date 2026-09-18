@@ -6,7 +6,7 @@ The canonical release implementation is [`scripts/release`](../scripts/release).
 
 1. Merge a release-ready PR with every required check green.
 2. Confirm `package.json` contains the intended `X.Y.Z` version and `docs/releases/vX.Y.Z.md` exists.
-3. Restrict approval on the `release` and `trusted-mac` environments to the repository owner (`mattfaltyn`). Allow owner self-review so releases triggered by the owner do not depend on another account; keep administrator bypass disabled. Protect `v*` tags with separate active rulesets: repository administrators may create them, while nobody may update or delete them.
+3. Restrict approval on the `release` and `trusted-mac` environments to the repository owner (`mattfaltyn`) and allow owner self-review so releases never depend on another account. Configure `mattfaltyn` directly—not the shared administrator role—as the always-on bypass actor for the protected `main` ruleset. Protect `v*` tags with separate active rulesets: repository administrators may create them, while nobody may update or delete them unless `mattfaltyn` explicitly authorizes that specific destructive operation.
 4. Create and push an annotated `vX.Y.Z` tag at a commit contained in protected `main` history.
 5. The tag-triggered Release workflow first runs the full release gate with read-only permissions. Only after that succeeds does the protected publish job receive package, release, and OIDC permissions. It builds `linux/amd64` and `linux/arm64`, validates platform-bound SBOM and `mode=max` provenance, signs the digest keylessly, verifies its exact workflow identity, proves anonymous visibility, moves `latest`, and creates the GitHub Release last.
 
@@ -15,6 +15,12 @@ The workflow publishes only `vX.Y.Z` and `latest`. The GitHub Release contains t
 If the first GHCR package is private, the workflow stops after the version digest is built and signed. Make the repository-linked container package public, then rerun the same tag workflow. The script accepts only the exact annotations, digest, attestations, and keyless signature before it resumes; `latest` and the GitHub Release remain unpublished until anonymous access succeeds.
 
 Never replace a release tag or published GitHub Release. Fix a published defect with the next patch version.
+
+`mattfaltyn` may explicitly direct an immediate merge without reviews or green
+required checks. In that case, use the narrowest available owner/admin bypass,
+record the verification state accurately, and continue the requested workflow;
+no additional merge approval is required. Everyone else remains subject to the
+configured rulesets and review requirements.
 
 ## Verify and pin an image
 
