@@ -1,6 +1,6 @@
 # TitanSkies
 
-TitanSkies is a North American wildfire-smoke forecast, air-quality observation, and reported-wildfire explorer. The canonical MIT-licensed application runs through Docker, natively on Omarchy/systemd Linux, or as the public Vercel site. It has no analytics.
+TitanSkies is a North American wildfire-smoke forecast, air-quality observation, and reported-wildfire explorer. The canonical MIT-licensed application runs through Docker or as the public Vercel site. It has no analytics.
 
 > TitanSkies uses preliminary observations, model forecasts, and agency-reported incidents that may be delayed, incomplete, inaccurate, retained from an earlier update, or unavailable. It does not identify smoke origin and is not an emergency alert or medical service. Check source timestamps, official alerts, and local health guidance before acting.
 
@@ -21,39 +21,9 @@ cp .env.example .env
 docker compose up -d
 ```
 
-Open <http://127.0.0.1:8080>. The `ingest` service publishes immediately and every 15 minutes. The `web` service mounts the publication volume read-only. Use the signed release image as declared in `compose.yaml`, or build the same image locally with `docker compose build --pull`.
+Open <http://127.0.0.1:8080>. The `ingest` service publishes immediately and every 15 minutes. The `web` service mounts the publication volume read-only. Compose pulls `ghcr.io/hypertrial/titanskies:latest` by default. Set `TITANSKIES_VERSION=vX.Y.Z` to select an immutable release, or build the same image locally with `docker compose build --pull`.
 
 For a network-free demonstration, set `CONTEXT_SOURCE=demo`. Demo files are synthetic and contain no fetched provider records.
-
-## Native user installation (Omarchy/Linux)
-
-Requirements: Node.js 22, Python 3.11+, `uv`, and a working systemd user manager. From a verified release checkout:
-
-```sh
-./scripts/install-user
-```
-
-The installer uses no sudo. It creates:
-
-- `$XDG_CONFIG_HOME/titanskies/env` with mode `0600`;
-- `$XDG_DATA_HOME/titanskies/releases/<version>` and atomic `current` symlink;
-- `$XDG_STATE_HOME/titanskies` and `$XDG_CACHE_HOME/titanskies`;
-- a systemd user web service and persistent 15-minute ingest timer;
-- a desktop entry opening <http://127.0.0.1:8080>.
-
-It runs one immediate ingest and rolls back the `current` symlink when the web self-check fails. Missing-tool errors include Omarchy guidance. For signed manual updates, download the release archive, `SHA256SUMS`, and `SHA256SUMS.sig`, then run:
-
-```sh
-./scripts/update-user titanskies-VERSION.tar.gz SHA256SUMS SHA256SUMS.sig
-```
-
-Normal uninstall preserves configuration, publications, and cache:
-
-```sh
-./scripts/uninstall-user
-```
-
-Use `./scripts/uninstall-user --purge` only when you also want the default configuration, publication, and cache directories removed. Custom `TITANSKIES_DATA_DIR` or `TITANSKIES_CACHE_DIR` locations are preserved and must be removed manually.
 
 ## Public Vercel deployment
 
@@ -87,7 +57,7 @@ Run `./scripts/verify-fast` during development, `./scripts/verify` before mergin
 - `GET /api/context-health` returns health schema v1, publication timestamps and state, 37-hour coverage, remaining hours, all eight source states, and redacted issue codes. Healthy/degraded is HTTP 200; initializing, missing, invalid, or expired is HTTP 503. Monitoring may repeat `expectedSource` and provide `expectedVersion=8`.
 - `GET /api/healthz` is a process liveness probe.
 
-Docker and Omarchy have no HTTP ingest or administration endpoint. Vercel additionally exposes authenticated `GET /api/context` for Vercel Cron; authenticated `HEAD` performs no ingest.
+Docker has no HTTP ingest or administration endpoint. Vercel additionally exposes authenticated `GET /api/context` for Vercel Cron; authenticated `HEAD` performs no ingest.
 
 ## Configuration
 
@@ -95,7 +65,7 @@ See [`.env.example`](.env.example). The stable public settings are:
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `STORAGE_BACKEND` | `local` | `local` for Docker/Omarchy, `blob` for Vercel production |
+| `STORAGE_BACKEND` | `local` | `local` for Docker, `blob` for Vercel production |
 | `BLOB_READ_WRITE_TOKEN` | empty | Required server-only Vercel Blob credential in Blob mode |
 | `BLOB_STORE_ID` | empty | Required Vercel Blob store identity in Blob mode |
 | `PUBLIC_BLOB_BASE_URL` | empty | Required public HTTPS Vercel Blob origin in Blob mode |

@@ -1,0 +1,82 @@
+#!/bin/sh
+set -eu
+
+cd "$(dirname "$0")/.."
+
+command -v docker >/dev/null 2>&1 || { echo "Docker is required" >&2; exit 1; }
+docker info >/dev/null 2>&1 || { echo "Docker is not running" >&2; exit 1; }
+
+builder_platforms=$(docker buildx inspect --bootstrap 2>&1) || {
+  echo "Docker Buildx is unavailable" >&2
+  exit 1
+}
+for platform in linux/arm64 linux/amd64; do
+  printf '%s\n' "$builder_platforms" | grep -q "$platform" \
+    || { echo "Docker Buildx does not support $platform" >&2; exit 1; }
+done
+
+cleanup_platform() {
+  arch=$1
+  docker rm --force "titanskies-platform-web-$arch-$$" >/dev/null 2>&1 || true
+  docker volume rm "titanskies-platform-data-$arch-$$" >/dev/null 2>&1 || true
+  docker volume rm "titanskies-platform-cache-$arch-$$" >/dev/null 2>&1 || true
+  docker image rm "titanskies-platform-$arch:verify-$$" >/dev/null 2>&1 || true
+}
+
+cleanup() {
+  cleanup_platform arm64
+  cleanup_platform amd64
+}
+trap cleanup EXIT HUP INT TERM
+
+for arch in arm64 amd64; do
+  platform="linux/$arch"
+  image="titanskies-platform-$arch:verify-$$"
+  data_volume="titanskies-platform-data-$arch-$$"
+  cache_volume="titanskies-platform-cache-$arch-$$"
+  web_container="titanskies-platform-web-$arch-$$"
+
+  docker buildx build --platform "$platform" --load --tag "$image" .
+  actual_arch=$(docker image inspect "$image" --format '{{.Architecture}}')
+  [ "$actual_arch" = "$arch" ] || {
+    echo "$image has architecture $actual_arch, expected $arch" >&2
+    exit 1
+  }
+
+  docker volume create "$data_volume" >/dev/null
+  docker volume create "$cache_volume" >/dev/null
+  docker run --rm --platform "$platform" \
+    --read-only --cap-drop ALL --security-opt no-new-privileges:true \
+    --tmpfs /tmp:rw,noexec,nosuid,size=256m \
+    --env CONTEXT_SOURCE=demo \
+    --volume "$data_volume:/var/lib/titanskies" \
+    --volume "$cache_volume:/var/cache/titanskies" \
+    "$image" ingest-once
+
+  docker run --detach --name "$web_container" --platform "$platform" \
+    --read-only --cap-drop ALL --security-opt no-new-privileges:true \
+    --tmpfs /tmp:rw,noexec,nosuid,size=256m \
+    --env CONTEXT_SOURCE=demo \
+    --volume "$data_volume:/var/lib/titanskies:ro" \
+    "$image" web >/dev/null
+
+  ready=0
+  attempt=0
+  while [ "$attempt" -lt 90 ]; do
+    if docker exec "$web_container" node -e \
+      "Promise.all([fetch('http://127.0.0.1:8080/api/healthz'),fetch('http://127.0.0.1:8080/api/context-health?expectedVersion=8')]).then(r=>process.exit(r.every(x=>x.ok)?0:1)).catch(()=>process.exit(1))"; then
+      ready=1
+      break
+    fi
+    attempt=$((attempt + 1))
+    sleep 2
+  done
+  if [ "$ready" -ne 1 ]; then
+    docker logs "$web_container" >&2 || true
+    echo "$platform health smoke failed" >&2
+    exit 1
+  fi
+
+  cleanup_platform "$arch"
+  printf '%s build and health smoke passed\n' "$platform"
+done

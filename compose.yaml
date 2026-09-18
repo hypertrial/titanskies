@@ -1,7 +1,7 @@
 name: titanskies
 
 x-service: &service
-  image: ghcr.io/hypertrial/titanskies:${TITANSKIES_VERSION:-v0.1.0}
+  image: ghcr.io/hypertrial/titanskies:${TITANSKIES_VERSION:-latest}
   build:
     context: .
   restart: unless-stopped

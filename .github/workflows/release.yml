@@ -1,0 +1,105 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      runner:
+        description: Runner for this trusted annotated-tag release
+        required: true
+        default: hosted
+        type: choice
+        options:
+          - hosted
+          - mac
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    if: >-
+      github.event_name != 'workflow_dispatch' ||
+      inputs.runner == 'hosted' ||
+      inputs.runner == 'mac'
+    runs-on: ${{ github.event_name == 'workflow_dispatch' && inputs.runner == 'mac' && format('titanskies-release-{0}-{1}', github.run_id, github.run_attempt) || 'ubuntu-latest' }}
+    environment: ${{ inputs.runner == 'mac' && 'trusted-mac' || 'release-verification' }}
+    permissions:
+      contents: read
+    outputs:
+      revision: ${{ steps.release-verify.outputs.revision }}
+      artifact_name: ${{ steps.release_metadata.outputs.artifact_name }}
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+        with:
+          node-version: "22"
+          cache: npm
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6
+        with:
+          version: "0.8.22"
+          enable-cache: true
+      - uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - run: ./scripts/bootstrap-ci-tools
+      - id: release-verify
+        run: ./scripts/release verify
+      - id: release_metadata
+        name: Name this attempt's immutable release metadata
+        run: echo "artifact_name=release-metadata-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: ${{ steps.release_metadata.outputs.artifact_name }}
+          path: |
+            artifacts/sbom.cdx.json
+            artifacts/THIRD_PARTY_NOTICES.md
+          if-no-files-found: error
+          retention-days: 1
+
+  publish:
+    needs: verify
+    runs-on: ${{ github.event_name == 'workflow_dispatch' && inputs.runner == 'mac' && format('titanskies-release-{0}-{1}', github.run_id, github.run_attempt) || 'ubuntu-latest' }}
+    environment: release
+    permissions:
+      contents: write
+      packages: write
+      id-token: write
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+        with:
+          node-version: "22"
+      - uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - uses: sigstore/cosign-installer@398d4b0eeef1380460a10c8013a76f728fb906ac # v3
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
+        with:
+          name: ${{ needs.verify.outputs.artifact_name }}
+          path: artifacts
+      - name: Publish the verified release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TITANSKIES_VERIFIED_SHA: ${{ needs.verify.outputs.revision }}
+        run: ./scripts/release publish

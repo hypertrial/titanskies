@@ -2,8 +2,8 @@
 
 TitanSkies is a self-hosted North American wildfire-smoke forecast, air-quality
 observation, and reported-wildfire explorer. This checkout is the product
-application. Pad work for it shares `titanskies-smoke-engineering` with
-`titanskies-smoke`. Every Work item in that workspace MUST start with
+application. Pad work for it shares `titanskies-engineering` with
+`titanskies-vercel`. Every Work item in that workspace MUST start with
 `Repository: titanskies`.
 
 Use the workspace from `.pad.toml`. Follow `AGENTS.md` and the local
@@ -43,5 +43,5 @@ docker image build, and compose smoke. `npm run verify:release` remains the
 public-release gate. `check:public` allows committed `.pad.toml` (workspace slug
 only), the canonical `.pad/universal.lock.json`, and the audited Vercel adapter;
 it rejects credentials, local deployment state, and all other `.pad/` metadata.
-Release verification also covers the multi-architecture container and native
-Omarchy installer.
+Release verification also covers the multi-architecture container, keyless
+release policy, and Docker Compose smoke.

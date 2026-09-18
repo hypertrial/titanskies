@@ -24,13 +24,15 @@ TITANSKIES_VERSION=$version TITANSKIES_PORT=$port CONTEXT_SOURCE=demo \
   compose --project-name "$project" up --detach
 
 ready=0
-for _attempt in $(seq 1 90); do
+attempt=0
+while [ "$attempt" -lt 90 ]; do
   if TITANSKIES_VERSION=$version TITANSKIES_PORT=$port CONTEXT_SOURCE=demo \
     compose --project-name "$project" exec --no-TTY web node -e \
       "Promise.all([fetch('http://127.0.0.1:8080/api/healthz'),fetch('http://127.0.0.1:8080/api/context-health?expectedVersion=8')]).then(r=>process.exit(r.every(x=>x.ok)?0:1)).catch(()=>process.exit(1))"; then
     ready=1
     break
   fi
+  attempt=$((attempt + 1))
   sleep 2
 done
 [ "$ready" -eq 1 ] || { compose --project-name "$project" logs web ingest >&2; exit 1; }

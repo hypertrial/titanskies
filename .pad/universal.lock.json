@@ -2,11 +2,11 @@
   "files": {
     ".agents/skills/pad-engineering/SKILL.md": "3cb5185116663c2f8ee58764a4180784ff2604b05e2e75b2b6f13cc1ccfd0071",
     "AGENTS.md": "8e0e7df28f0df8d847f4981da0978c28c2c9615b0382c3bfc62c6af90a52f6b1",
-    "PROJECT_AGENT.md": "5a4d75ca292db11a240dfc5e546dcdeb9e5ef9d2b58999a2f74c7e1ffb964987",
+    "PROJECT_AGENT.md": "2ea2d3df724b1b1f32776f1612414df3426fc41dc0c2b566e429c264d899ea71",
     "scripts/verify": "a1f4ec9c10f53c696836ce9911f87966d5410b19b8d9d00ae08cbf15c2830da5",
     "scripts/verify-fast": "17ac403fb462d6c9147e0d20440649051866388ca3f650ea7318e98f05e7d424"
   },
   "repository": "titanskies",
   "version": "1.1.0",
-  "workspace": "titanskies-smoke-engineering"
+  "workspace": "titanskies-engineering"
 }
