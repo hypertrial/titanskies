@@ -18,6 +18,9 @@ on:
 permissions:
   contents: read
 
+env:
+  COREPACK_ENABLE_AUTO_PIN: "0"
+
 concurrency:
   group: release-${{ github.ref }}
   cancel-in-progress: false
