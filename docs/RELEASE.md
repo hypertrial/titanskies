@@ -36,9 +36,10 @@ Use this only for a trusted ref already present in `hypertrial/titanskies` when 
 
 1. Start the Mac's approved Linux Docker runtime (Docker Desktop or Colima), select its context, and confirm `docker info` and `docker buildx inspect --bootstrap` advertise both target platforms.
 2. Cancel the queued hosted workflow run.
-3. In GitHub repository Settings → Actions → Runners, choose **New self-hosted runner**, select macOS ARM64, and use the current package URL and checksum commands shown by GitHub. Do not reuse an older download or checksum from this document.
-4. Manually dispatch `ci.yml` or `release.yml` at the trusted branch/tag with `runner=mac`. A release dispatch must select the exact annotated tag. Note the workflow run ID and attempt number, then have `mattfaltyn` approve the `trusted-mac` environment only after checking the queued workflow, ref, commit, and actor. The workflow derives its one-use runner label as `titanskies-release-RUN_ID-RUN_ATTEMPT`; callers cannot choose it.
-5. Extract the runner into a new temporary directory and register it with the one-use token from GitHub and that exact derived label. Suppress every default self-hosted label so no other workflow can select the runner:
+3. For a pull request, change the protected `main` ruleset's required check from `verify-hosted` to `verify-mac`. Both names run the same canonical gate, but separating them prevents a canceled hosted check from masking the Mac result. Restore `verify-hosted` after hosted capacity returns; never remove the required-check rule.
+4. In GitHub repository Settings → Actions → Runners, choose **New self-hosted runner**, select macOS ARM64, and use the current package URL and checksum commands shown by GitHub. Do not reuse an older download or checksum from this document.
+5. Manually dispatch `ci.yml` or `release.yml` at the trusted branch/tag with `runner=mac`. A release dispatch must select the exact annotated tag. Note the workflow run ID and attempt number, then have `mattfaltyn` approve the `trusted-mac` environment only after checking the queued workflow, ref, commit, and actor. The workflow derives its one-use runner label as `titanskies-release-RUN_ID-RUN_ATTEMPT`; callers cannot choose it.
+6. Extract the runner into a new temporary directory and register it with the one-use token from GitHub and that exact derived label. Suppress every default self-hosted label so no other workflow can select the runner:
 
    ```sh
    label="titanskies-release-RUN_ID-RUN_ATTEMPT"
@@ -47,8 +48,8 @@ Use this only for a trusted ref already present in `hypertrial/titanskies` when 
      --ephemeral --unattended --no-default-labels --labels "$label"
    ```
 
-6. Run `./run.sh`. The runner accepts the verification job and auto-deregisters. For a release, the protected publish job then queues on the same derived label; approve the `release` environment, extract a second fresh runner directory, register another ephemeral runner with the same label and a new one-use token, and run it once. A rerun increments `RUN_ATTEMPT`, so derive and register the new label shown by that attempt.
-7. On failure, copy `_diag` to a private operator location. Remove every runner directory, then confirm the repository has no registered runner:
+7. Run `./run.sh`. The runner accepts the verification job and auto-deregisters. For a release, the protected publish job then queues on the same derived label; approve the `release` environment, extract a second fresh runner directory, register another ephemeral runner with the same label and a new one-use token, and run it once. A rerun increments `RUN_ATTEMPT`, so derive and register the new label shown by that attempt.
+8. On failure, copy `_diag` to a private operator location. Remove every runner directory, then confirm the repository has no registered runner:
 
    ```sh
    gh api repos/hypertrial/titanskies/actions/runners --jq '.runners'
