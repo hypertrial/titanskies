@@ -205,6 +205,31 @@ def test_lease_create_does_not_retry_conflict() -> None:
     assert session.put.call_count == 1
 
 
+def test_lease_create_accepts_vercel_duplicate_bad_request() -> None:
+    conflict = _http(400, json_payload={
+        "error": {
+            "code": "bad_request",
+            "message": "This blob already exists, use `allowOverwrite: true` if you want to overwrite it.",
+        }
+    })
+    current = _http(200, json_payload={
+        "owner": "other",
+        "expiresAt": "2026-08-14T12:00:00Z",
+    })
+    session = _session(put=Mock(return_value=conflict), get=Mock(return_value=current))
+
+    with patch("ingest.blob_store._blob_session", return_value=session):
+        assert BlobFrameStore(_settings()).acquire_lease(
+            "locks/ingest.json",
+            "owner",
+            datetime(2026, 8, 14, 11, tzinfo=timezone.utc),
+            datetime(2026, 8, 14, 11, 15, tzinfo=timezone.utc),
+        ) is None
+
+    assert session.put.call_count == 1
+    assert session.get.call_count == 1
+
+
 def test_blob_lease_creation_fails_closed_without_an_etag() -> None:
     created = _http(200, json_payload={"url": "https://example.public.blob.vercel-storage.com/locks/ingest.json"})
     session = _session(put=Mock(return_value=created))
@@ -322,6 +347,47 @@ def test_blob_put_treats_duplicate_path_conflict_as_reuse() -> None:
     assert session.put.call_args.kwargs["headers"]["x-api-version"] == "12"
     assert session.put.call_args.kwargs["headers"]["x-vercel-blob-store-id"] == "example"
     assert session.put.call_args.kwargs["headers"]["x-vercel-blob-access"] == "public"
+
+
+def test_blob_put_treats_vercel_duplicate_bad_request_as_reuse() -> None:
+    response = _http(400, json_payload={
+        "error": {
+            "code": "bad_request",
+            "message": "This blob already exists, use `allowOverwrite: true` if you want to overwrite it.",
+        }
+    })
+    response.raise_for_status = Mock(side_effect=AssertionError("duplicate response was raised"))
+    session = _session(put=Mock(return_value=response))
+
+    with patch("ingest.blob_store._blob_session", return_value=session):
+        url = BlobFrameStore(_settings()).put_bytes(
+            "context/assets/abc/x.png",
+            b"png",
+            "image/png",
+            cache_seconds=60,
+            overwrite=False,
+        )
+
+    assert url.endswith("context/assets/abc/x.png")
+    response.raise_for_status.assert_not_called()
+
+
+def test_blob_put_rejects_unrelated_bad_request() -> None:
+    response = _http(400, json_payload={
+        "error": {"code": "bad_request", "message": "invalid pathname"}
+    })
+    response.raise_for_status = Mock(side_effect=requests.HTTPError("400 Client Error"))
+    session = _session(put=Mock(return_value=response))
+
+    with patch("ingest.blob_store._blob_session", return_value=session):
+        with pytest.raises(requests.HTTPError, match="400 Client Error"):
+            BlobFrameStore(_settings()).put_bytes(
+                "context/assets/abc/x.png",
+                b"png",
+                "image/png",
+                cache_seconds=60,
+                overwrite=False,
+            )
 
 
 def test_blob_put_rejects_a_response_from_another_store() -> None:

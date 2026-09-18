@@ -157,6 +157,24 @@ def _read_limited(response: requests.Response, max_bytes: int) -> bytes:
     return b"".join(chunks)
 
 
+def _is_existing_blob(response: requests.Response) -> bool:
+    if response.status_code in {409, 412}:
+        return True
+    if response.status_code != 400:
+        return False
+    try:
+        payload = response.json()
+    except (TypeError, ValueError):
+        return False
+    error = payload.get("error") if isinstance(payload, dict) else None
+    return (
+        isinstance(error, dict)
+        and error.get("code") == "bad_request"
+        and isinstance(error.get("message"), str)
+        and error["message"].startswith("This blob already exists")
+    )
+
+
 class BlobFrameStore:
     def __init__(self, settings: Settings):
         self.settings = settings
@@ -225,7 +243,7 @@ class BlobFrameStore:
         )
         try:
             record_storage("write", bytes_out=len(data))
-            if response.status_code in {409, 412} and not overwrite:
+            if not overwrite and _is_existing_blob(response):
                 return self.url_for(pathname)
             response.raise_for_status()
             payload = json.loads(_read_limited(response, 64 * 1024))
@@ -363,7 +381,7 @@ class BlobFrameStore:
             stream=True,
         )
         try:
-            if response.status_code in {409, 412}:
+            if _is_existing_blob(response):
                 return None
             response.raise_for_status()
             result = json.loads(_read_limited(response, 64 * 1024))
