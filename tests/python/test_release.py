@@ -42,7 +42,9 @@ def _release_checkout(tmp_path: Path) -> tuple[Path, dict[str, str], Path, Path]
         'case "$1" in\n'
         '  status) [ "${FAKE_DIRTY:-0}" = 1 ] && echo " M dirty"; exit 0 ;;\n'
         '  describe) printf "%s\\n" "${FAKE_DESCRIBE:-v0.1.0}" ;;\n'
-        '  cat-file) printf "%s\\n" "${FAKE_TAG_TYPE:-tag}" ;;\n'
+        '  cat-file)\n'
+        '    if [ "${FAKE_TAG_TYPE:-tag}" = checkout-commit ] && [ -f "$FAKE_STATE/tag-refreshed" ]; then echo tag;\n'
+        '    else printf "%s\\n" "${FAKE_TAG_TYPE:-tag}"; fi ;;\n'
         '  ls-remote)\n'
         '    count_file="$FAKE_STATE/remote-lookups"\n'
         '    count=0; [ ! -f "$count_file" ] || count=$(cat "$count_file")\n'
@@ -50,7 +52,9 @@ def _release_checkout(tmp_path: Path) -> tuple[Path, dict[str, str], Path, Path]
         f'    remote_revision="${{FAKE_REMOTE_REVISION:-{REVISION}}}"\n'
         '    if [ -n "${FAKE_REMOTE_DIVERGE_AFTER:-}" ] && [ "$count" -gt "$FAKE_REMOTE_DIVERGE_AFTER" ]; then remote_revision=different; fi\n'
         f'    printf "%s\\trefs/tags/v0.1.0\\n%s\\trefs/tags/v0.1.0^{{}}\\n" "${{FAKE_REMOTE_TAG:-{TAG_OBJECT}}}" "$remote_revision" ;;\n'
-        '  fetch) [ "${FAKE_FETCH_FAIL:-0}" != 1 ] ;;\n'
+        '  fetch)\n'
+        '    [ "${FAKE_FETCH_FAIL:-0}" != 1 ] || exit 1\n'
+        '    case "$*" in *refs/tags/v0.1.0:refs/tags/v0.1.0*) : > "$FAKE_STATE/tag-refreshed" ;; esac ;;\n'
         '  merge-base) [ "${FAKE_NOT_ON_MAIN:-0}" != 1 ] ;;\n'
         f'  rev-parse) case "$2" in refs/tags/*) echo {TAG_OBJECT} ;; *) echo {REVISION} ;; esac ;;\n'
         'esac\n',
@@ -210,6 +214,21 @@ def test_release_rejects_lightweight_tag_and_version_mismatch(tmp_path: Path) ->
     assert mismatch.returncode != 0
     assert "HEAD must be tagged v0.2.0" in mismatch.stderr
     assert "docker buildx build" not in _commands(log)
+
+
+def test_release_refreshes_annotated_tag_object_synthesized_by_checkout(
+    tmp_path: Path,
+) -> None:
+    repo, env, state, log = _release_checkout(tmp_path)
+
+    result = _run_release(repo, {**env, "FAKE_TAG_TYPE": "checkout-commit"}, "verify")
+
+    assert result.returncode == 0, result.stderr
+    assert (state / "tag-refreshed").exists()
+    assert (
+        "git fetch --force origin refs/tags/v0.1.0:refs/tags/v0.1.0"
+        in _commands(log)
+    )
 
 
 def test_release_rejects_missing_oidc_before_registry_mutation(tmp_path: Path) -> None:
