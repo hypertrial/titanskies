@@ -37,6 +37,7 @@ def test_ci_is_read_only_and_mac_is_manual_only() -> None:
     assert "self-hosted" not in ci
     assert ci.count("./scripts/bootstrap-ci-tools") == 1
     assert ci.count("./scripts/verify_release.sh") == 1
+    assert ci.count("if: inputs.runner != 'mac'") == 1
     assert "brew install" not in ci
     assert "verify-hosted:" not in ci
     assert "verify-mac:" not in ci
@@ -59,6 +60,7 @@ def test_release_has_minimal_permissions_and_delegates_to_one_script() -> None:
     assert release.count("./scripts/bootstrap-ci-tools") == 1
     assert release.count("./scripts/release verify") == 1
     assert release.count("./scripts/release publish") == 1
+    assert release.count("if: inputs.runner != 'mac'") == 1
     assert "brew install" not in release
     for duplicated_policy in ("docker buildx build", "cosign sign ", "gh release create"):
         assert duplicated_policy not in release
