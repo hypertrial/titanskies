@@ -30,6 +30,7 @@ def test_ci_is_read_only_and_mac_is_manual_only() -> None:
     assert "workflow_dispatch:" in ci
     assert "github.event_name == 'workflow_dispatch'" in ci
     assert "mac_label" not in ci
+    assert "name: ${{ inputs.runner == 'mac' && 'verify-mac' || 'verify-hosted' }}" in ci
     assert "format('titanskies-release-{0}-{1}', github.run_id, github.run_attempt)" in ci
     assert ci.count("format('titanskies-release-{0}-{1}', github.run_id, github.run_attempt)") == 1
     assert "environment: ${{ inputs.runner == 'mac' && 'trusted-mac' || 'release-verification' }}" in ci

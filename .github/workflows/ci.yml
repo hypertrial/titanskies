@@ -24,6 +24,7 @@ concurrency:
 
 jobs:
   verify:
+    name: ${{ inputs.runner == 'mac' && 'verify-mac' || 'verify-hosted' }}
     runs-on: ${{ github.event_name == 'workflow_dispatch' && inputs.runner == 'mac' && format('titanskies-release-{0}-{1}', github.run_id, github.run_attempt) || 'ubuntu-latest' }}
     environment: ${{ inputs.runner == 'mac' && 'trusted-mac' || 'release-verification' }}
     timeout-minutes: 90
