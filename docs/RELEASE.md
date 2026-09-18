@@ -6,7 +6,7 @@ The canonical release implementation is [`scripts/release`](../scripts/release).
 
 1. Merge a release-ready PR with every required check green.
 2. Confirm `package.json` contains the intended `X.Y.Z` version and `docs/releases/vX.Y.Z.md` exists.
-3. Require independent reviewer approval on the `release` and `trusted-mac` environments, with self-review and administrator bypass disabled. Protect `v*` tags with separate active rulesets: repository administrators may create them, while nobody may update or delete them.
+3. Restrict approval on the `release` and `trusted-mac` environments to the repository owner (`mattfaltyn`). Allow owner self-review so releases triggered by the owner do not depend on another account; keep administrator bypass disabled. Protect `v*` tags with separate active rulesets: repository administrators may create them, while nobody may update or delete them.
 4. Create and push an annotated `vX.Y.Z` tag at a commit contained in protected `main` history.
 5. The tag-triggered Release workflow first runs the full release gate with read-only permissions. Only after that succeeds does the protected publish job receive package, release, and OIDC permissions. It builds `linux/amd64` and `linux/arm64`, validates platform-bound SBOM and `mode=max` provenance, signs the digest keylessly, verifies its exact workflow identity, proves anonymous visibility, moves `latest`, and creates the GitHub Release last.
 
@@ -37,7 +37,7 @@ Use this only for a trusted ref already present in `hypertrial/titanskies` when 
 1. Start the Mac's approved Linux Docker runtime (Docker Desktop or Colima), select its context, and confirm `docker info` and `docker buildx inspect --bootstrap` advertise both target platforms.
 2. Cancel the queued hosted workflow run.
 3. In GitHub repository Settings → Actions → Runners, choose **New self-hosted runner**, select macOS ARM64, and use the current package URL and checksum commands shown by GitHub. Do not reuse an older download or checksum from this document.
-4. Manually dispatch `ci.yml` or `release.yml` at the trusted branch/tag with `runner=mac`. A release dispatch must select the exact annotated tag. Note the workflow run ID and attempt number, then approve the `trusted-mac` environment only after checking the queued workflow, ref, commit, and actor. The workflow derives its one-use runner label as `titanskies-release-RUN_ID-RUN_ATTEMPT`; callers cannot choose it.
+4. Manually dispatch `ci.yml` or `release.yml` at the trusted branch/tag with `runner=mac`. A release dispatch must select the exact annotated tag. Note the workflow run ID and attempt number, then have `mattfaltyn` approve the `trusted-mac` environment only after checking the queued workflow, ref, commit, and actor. The workflow derives its one-use runner label as `titanskies-release-RUN_ID-RUN_ATTEMPT`; callers cannot choose it.
 5. Extract the runner into a new temporary directory and register it with the one-use token from GitHub and that exact derived label. Suppress every default self-hosted label so no other workflow can select the runner:
 
    ```sh
