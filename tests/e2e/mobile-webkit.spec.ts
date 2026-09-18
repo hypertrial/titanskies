@@ -71,7 +71,9 @@ test("keeps search and compact selection sheets usable in WebKit", async ({ page
   await search.press("Enter");
   sheet = page.getByRole("dialog", { name: "Toronto" });
   await expect(sheet).toBeVisible();
+  await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
   await page.keyboard.press("Escape");
+  await expect(sheet).toBeHidden();
   await expect(search).toBeFocused();
   assertNoBrowserErrors();
 });
