@@ -97,9 +97,10 @@ jobs:
       - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
         with:
           name: ${{ needs.verify.outputs.artifact_name }}
-          path: artifacts
+          path: ${{ runner.temp }}/release-artifacts
       - name: Publish the verified release
         env:
           GH_TOKEN: ${{ github.token }}
           TITANSKIES_VERIFIED_SHA: ${{ needs.verify.outputs.revision }}
+          TITANSKIES_RELEASE_ARTIFACTS: ${{ runner.temp }}/release-artifacts
         run: ./scripts/release publish

@@ -84,6 +84,7 @@ def test_release_grants_write_and_oidc_only_to_publish_after_verified_artifact()
     assert "permissions:\n      contents: write\n      packages: write\n      id-token: write\n" in publish
     assert "actions/download-artifact@" in publish
     assert "name: ${{ needs.verify.outputs.artifact_name }}" in publish
-    assert "path: artifacts" in publish
+    assert "path: ${{ runner.temp }}/release-artifacts" in publish
     assert "TITANSKIES_VERIFIED_SHA: ${{ needs.verify.outputs.revision }}" in publish
+    assert "TITANSKIES_RELEASE_ARTIFACTS: ${{ runner.temp }}/release-artifacts" in publish
     assert "environment: release" in publish
