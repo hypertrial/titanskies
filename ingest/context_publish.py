@@ -197,12 +197,12 @@ def seed_asset_memo(store: FrameStore, previous: dict[str, Any] | None, *, worke
         if not all(results):
             memo.clear()
             return False
-        for path, url in pairs:
-            memo[path] = url
+        for path, _url in pairs:
+            memo[path] = store.url_for(path)
         return True
 
     valid = True
-    for path, url in pairs:
+    for path, _url in pairs:
         try:
             data = store.get_bytes(path, max_bytes=max(CONTEXT_RASTER_BUDGET_BYTES, MONITOR_JSON_BUDGET_BYTES))
         except (OSError, RuntimeError, ValueError):
@@ -211,7 +211,7 @@ def seed_asset_memo(store: FrameStore, previous: dict[str, Any] | None, *, worke
         if data is None or hashlib.sha256(data).hexdigest()[:20] != digest:
             valid = False
         else:
-            memo[path] = url
+            memo[path] = store.url_for(path)
     if not valid:
         memo.clear()
     return valid

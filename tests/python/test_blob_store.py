@@ -682,6 +682,29 @@ def test_blob_seed_uses_head_without_gets(monkeypatch: Any) -> None:
     assert metrics.storage_read_bytes == 0
 
 
+def test_blob_seed_rebinds_memo_urls_to_store_origin() -> None:
+    from ingest.context_publish import seed_asset_memo
+    from ingest.perf import current_asset_memo, ingest_run
+
+    memory = _MemoryBlobSession()
+    store = BlobFrameStore(_settings())
+    previous: dict[str, Any] = {"assets": []}
+    paths: list[str] = []
+    for index in range(2):
+        data = f"rebind-{index}".encode()
+        digest = hashlib.sha256(data).hexdigest()[:20]
+        path = f"context/assets/{digest}/item-{index}.bin"
+        paths.append(path)
+        with patch("ingest.blob_store._blob_session", return_value=memory):
+            store.put_bytes(path, data, "application/octet-stream", cache_seconds=60, overwrite=False)
+        previous["assets"].append(f"https://evil.example/{path}")
+    with patch("ingest.blob_store._blob_session", return_value=memory), ingest_run():
+        assert seed_asset_memo(store, previous, workers=2) is True
+        memo = current_asset_memo()
+        for path in paths:
+            assert memo[path] == store.url_for(path)
+
+
 def test_blob_seed_verify_assets_uses_gets(monkeypatch: Any) -> None:
     from ingest.context_publish import seed_asset_memo
     from ingest.perf import ingest_run
