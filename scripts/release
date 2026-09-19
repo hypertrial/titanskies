@@ -142,12 +142,23 @@ verify_signature() {
 }
 
 verify_anonymous_version() {
-  anonymous_config=$(mktemp -d "${TMPDIR:-/tmp}/titanskies-anonymous.XXXXXX")
-  if ! DOCKER_CONFIG=$anonymous_config docker buildx imagetools inspect "$image:$tag" >/dev/null 2>&1; then
-    rm -rf "$anonymous_config"
-    fail "$image:$tag is not anonymously readable; make the linked GHCR package public, then rerun this tag workflow"
-  fi
-  rm -rf "$anonymous_config"
+  token_response=$(curl --fail --silent --show-error \
+    "https://ghcr.io/token?service=ghcr.io&scope=repository:hypertrial/titanskies:pull") \
+    || fail "could not request anonymous GHCR access"
+  anonymous_token=$(printf '%s' "$token_response" | node -e '
+    const value = JSON.parse(require("node:fs").readFileSync(0, "utf8"));
+    const token = value.token || value.access_token || "";
+    if (!/^[A-Za-z0-9._~+/-]+=*$/.test(token)) process.exit(1);
+    process.stdout.write(token);
+  ') || fail "GHCR did not return a valid anonymous access token"
+  auth_header=$stage/anonymous-authorization
+  (umask 077 && printf 'Authorization: Bearer %s\n' "$anonymous_token" > "$auth_header")
+  unset anonymous_token token_response
+  curl --fail --silent --show-error \
+    --header @"$auth_header" \
+    --header 'Accept: application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.list.v2+json' \
+    "https://ghcr.io/v2/hypertrial/titanskies/manifests/$tag" >/dev/null \
+    || fail "$image:$tag is not anonymously readable; make the linked GHCR package public, then rerun this tag workflow"
 }
 
 [ -z "$(git status --porcelain --untracked-files=all)" ] || fail "checkout must be clean"
@@ -199,7 +210,7 @@ fi
 [ -n "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" ] && [ -n "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}" ] \
   || fail "GitHub Actions OIDC token endpoint is unavailable"
 [ -n "${GH_TOKEN:-}" ] || fail "GH_TOKEN is required"
-for command in cosign gh; do
+for command in cosign curl gh; do
   command -v "$command" >/dev/null 2>&1 || fail "$command is required"
 done
 
