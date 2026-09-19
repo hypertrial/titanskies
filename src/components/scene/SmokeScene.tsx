@@ -28,23 +28,23 @@ class SceneAssetBoundary extends Component<{
   resetKey: number;
   onError: (message: string) => void;
 }, { failed: boolean }> {
-  state = { failed: false };
+  override state = { failed: false };
 
   static getDerivedStateFromError() {
     return { failed: true };
   }
 
-  componentDidCatch(error: Error) {
+  override componentDidCatch(error: Error) {
     this.props.onError(error.message || "Unable to load the globe texture.");
   }
 
-  componentDidUpdate(previous: Readonly<{ resetKey: number }>) {
+  override componentDidUpdate(previous: Readonly<{ resetKey: number }>) {
     if (this.state.failed && previous.resetKey !== this.props.resetKey) {
       this.setState({ failed: false });
     }
   }
 
-  render() {
+  override render() {
     return this.state.failed ? null : this.props.children;
   }
 }
@@ -255,14 +255,15 @@ function CameraControls({ resetSignal, focusLocation, zoomSignal, controlsRef, m
     else invalidate();
   });
 
+  const gestureProfile = cameraGestureProfile(camera.position.length(), shortLandscape);
   return (
     <OrbitControls
       ref={controlsRef}
       enablePan={false}
       enableDamping
-      dampingFactor={cameraGestureProfile(camera.position.length(), shortLandscape).dampingFactor}
-      rotateSpeed={cameraGestureProfile(camera.position.length(), shortLandscape).rotateSpeed}
-      zoomSpeed={cameraGestureProfile(camera.position.length(), shortLandscape).zoomSpeed}
+      dampingFactor={gestureProfile.dampingFactor}
+      rotateSpeed={gestureProfile.rotateSpeed}
+      zoomSpeed={gestureProfile.zoomSpeed}
       target={[0, 0, 0]}
       minDistance={MIN_CAMERA_DISTANCE}
       maxDistance={overview}

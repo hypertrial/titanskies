@@ -1,6 +1,5 @@
 #!/usr/bin/env node
 import { spawn } from "node:child_process";
-import { existsSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { devConfiguration } from "./dev_mode.mjs";
@@ -8,16 +7,8 @@ import { devConfiguration } from "./dev_mode.mjs";
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const refreshOnce = process.argv.includes("--refresh-once");
 
-function pythonBin() {
-  for (const relative of [".venv/bin/python", ".venv311/bin/python", ".venv/Scripts/python.exe"]) {
-    const candidate = path.join(repoRoot, relative);
-    if (existsSync(candidate)) return candidate;
-  }
-  return "python3";
-}
-
 function runPythonWatch(args, env = process.env) {
-  return spawn(pythonBin(), ["scripts/watch_context.py", ...args], {
+  return spawn(path.join(repoRoot, "scripts/run_python.sh"), ["scripts/watch_context.py", ...args], {
     cwd: repoRoot,
     stdio: "inherit",
     env,

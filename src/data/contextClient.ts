@@ -1,5 +1,6 @@
+import { decodeBitmap } from "../rendering/imageDecode";
 import type { TimelineEntry } from "./contracts";
-import { positionForTime } from "./timeline";
+import { positionForTime, timelineEntry } from "./timeline";
 import { CONTEXT_VERSIONS, HEALTH_STATUSES, PUBLICATION_STATUSES, SOURCE_STATUSES, isContextManifest, isIso, isRecord, isUrl, normalizeContextManifest, uiForecastHorizonHours, visibleForecastRun } from "./contextSchema";
 import type { ContextHealth, ContextHealthStatus, ContextManifest, ContextPointer, ContextPublicationStatus, ContextSource, ContextSourceStatus } from "./contextSchema";
 
@@ -76,11 +77,7 @@ export const CONTEXT_POINTER_POLL_MS = 2 * 60_000;
 export const CONTEXT_IMAGE_TIMEOUT_MS = 15_000;
 
 function forecastTimelineEntries(manifest: ContextManifest, nowMs = Date.now()): TimelineEntry[] {
-  return visibleForecastRun(manifest, uiForecastHorizonHours(manifest), nowMs).frames.map((frame, index) => ({
-    scanId: `forecast-${index}`,
-    observationStart: frame.validTime,
-    manifestUrl: frame.textureUrl ?? "",
-  }));
+  return visibleForecastRun(manifest, uiForecastHorizonHours(manifest), nowMs).frames.map(timelineEntry);
 }
 
 export function forecastTimelineIdentity(manifest: ContextManifest, nowMs = Date.now()): string {
@@ -126,30 +123,6 @@ export function playbackPositionAfterContextRefresh(args: {
   if (!Number.isFinite(previousStart)) return 0;
   return positionForTime(entries, previousStart + args.previousPositionMs);
 }
-
-async function decodeBitmap(blob: Blob, signal: AbortSignal): Promise<ImageBitmap> {
-  const pending = createImageBitmap(blob, { premultiplyAlpha: "none" });
-  pending.then((image) => { if (signal.aborted) image.close(); }, () => undefined);
-  if (signal.aborted) throw signal.reason;
-  let onAbort: (() => void) | undefined;
-  try {
-    const image = await Promise.race([
-      pending,
-      new Promise<never>((_, reject) => {
-        onAbort = () => reject(signal.reason);
-        signal.addEventListener("abort", onAbort, { once: true });
-      }),
-    ]);
-    if (signal.aborted) {
-      image.close();
-      throw signal.reason;
-    }
-    return image;
-  } finally {
-    if (onAbort) signal.removeEventListener("abort", onAbort);
-  }
-}
-
 
 export async function loadContextImage(url: string, signal?: AbortSignal, { preferImageElement = false }: { preferImageElement?: boolean } = {}): Promise<ImageBitmap | HTMLImageElement> {
   const controller = new AbortController();

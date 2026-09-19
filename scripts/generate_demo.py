@@ -5,14 +5,14 @@ import argparse
 import json
 import shutil
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from ingest.config import Settings
-from ingest.context_pipeline import run_context_ingest
+from ingest.config import Settings  # noqa: E402
+from ingest.context_pipeline import run_context_ingest  # noqa: E402
 
 
 def _valid_pointer(path: Path) -> bool:
@@ -54,7 +54,7 @@ def main() -> None:
         local_cache_dir=out / ".cache",
         data_url_prefix="/demo",
     )
-    result = run_context_ingest(settings, datetime(2024, 7, 15, 20, 0, tzinfo=timezone.utc))
+    result = run_context_ingest(settings, datetime(2024, 7, 15, 20, 0, tzinfo=UTC))
     if not result.get("ok"):
         raise SystemExit(f"demo generation failed: {result}")
     shutil.rmtree(out / ".cache", ignore_errors=True)

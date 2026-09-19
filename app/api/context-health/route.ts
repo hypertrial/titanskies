@@ -1,14 +1,16 @@
-import { isContextManifest, type ContextManifest, type ContextSource, type SourceState } from "@/data/contextSchema";
-import { blobBaseUrl, blobManifestValid, isBlobContextPointer, readBlobJson, type BlobContextPointer } from "@/server/blobData";
-import { isLocalContextPointer, localManifestAssetsAvailable, readLocalJson } from "@/server/localData";
+import { CONTEXT_VERSION, contextCapabilities, isContextManifest, isIso, type ContextManifest, type ContextSource, type SourceState } from "@/data/contextSchema";
+import { blobBaseUrl, blobManifestValid, readBlobJson } from "@/server/blobData";
+import { localManifestAssetsAvailable, readLocalJson } from "@/server/localData";
+import { isContextPointer } from "@/server/publicationContract";
+import runtimeLimits from "../../../shared/runtime-limits.json";
 
-const DEFAULT_WATCH_SECONDS = 900;
-const MIN_WATCH_SECONDS = 60;
-const MAX_WATCH_SECONDS = 3600;
+const DEFAULT_WATCH_SECONDS = runtimeLimits.watchSeconds.default;
+const MIN_WATCH_SECONDS = runtimeLimits.watchSeconds.min;
+const MAX_WATCH_SECONDS = runtimeLimits.watchSeconds.max;
 const MIN_FRESH_AGE_MS = 30 * 60_000;
 const MIN_COVERAGE_MS = 6 * 3_600_000;
 const UPSTREAM_DEADLINE_MS = 5_000;
-const SOURCES: ContextSource[] = ["airnow", "bcair", "sinaica", "aqhi", "wfigs", "cwfis", "firework", "hrrr"];
+const SOURCES = contextCapabilities(CONTEXT_VERSION)!.allowedSources as ContextSource[];
 const SOURCE_SET = new Set<ContextSource>(SOURCES);
 const headers = { "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff" };
 
@@ -24,9 +26,6 @@ type RunStatus = {
   consecutiveNonFresh: number;
 };
 
-const iso = (value: unknown): value is string =>
-  typeof value === "string" && Number.isFinite(Date.parse(value));
-
 function maximumFreshAgeMs(): number {
   const parsed = Number(process.env.CONTEXT_WATCH_SECONDS ?? DEFAULT_WATCH_SECONDS);
   const interval = Number.isInteger(parsed)
@@ -38,13 +37,13 @@ function maximumFreshAgeMs(): number {
 function validStatus(value: unknown): value is RunStatus {
   if (!value || typeof value !== "object") return false;
   const item = value as Partial<RunStatus>;
-  return item.version === 1 && iso(item.lastAttemptAt)
-    && (item.lastSuccessfulPublicationAt === null || iso(item.lastSuccessfulPublicationAt))
-    && (item.lastCompleteForecastAt === null || iso(item.lastCompleteForecastAt))
+  return item.version === 1 && isIso(item.lastAttemptAt)
+    && (item.lastSuccessfulPublicationAt === null || isIso(item.lastSuccessfulPublicationAt))
+    && (item.lastCompleteForecastAt === null || isIso(item.lastCompleteForecastAt))
     && (item.outcome === "fresh" || item.outcome === "retained" || item.outcome === "failed")
     && (item.contextVersion === null || item.contextVersion === 8)
     && Number.isInteger(item.forecastFrameCount) && Number.isInteger(item.consecutiveNonFresh)
-    && (item.forecastLastValidTime === null || iso(item.forecastLastValidTime));
+    && (item.forecastLastValidTime === null || isIso(item.forecastLastValidTime));
 }
 
 function publicSources(manifest: ContextManifest | null): Record<ContextSource, Pick<SourceState, "status" | "checkedAt" | "observedAt" | "provenance"> | null> {
@@ -108,11 +107,12 @@ export async function GET(request: Request): Promise<Response> {
       }
       if (!validStatus(statusValue)) issues.push("invalid-status");
       else status = statusValue;
-      const validPointer = base ? isBlobContextPointer(pointerValue, base) : isLocalContextPointer(pointerValue);
-      if (!validPointer) {
+      if (!isContextPointer(pointerValue, (manifestPath) => (
+        base ? `${base}/${manifestPath}` : `/data/${manifestPath}`
+      ))) {
         issues.push("invalid-pointer");
       } else {
-        const pointer = pointerValue as BlobContextPointer;
+        const pointer = pointerValue;
         pointerUpdatedAt = pointer.updatedAt;
         if (base) {
           const controller = new AbortController();

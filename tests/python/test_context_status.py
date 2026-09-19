@@ -1,10 +1,10 @@
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from ingest.context_publish import context_status_from_manifest, context_status_metrics, context_status_payload
 
 
 def test_context_status_tracks_fresh_retained_failed_and_recovery() -> None:
-    start = datetime(2026, 8, 21, 15, tzinfo=timezone.utc)
+    start = datetime(2026, 8, 21, 15, tzinfo=UTC)
     manifest = {
         "version": 8,
         "forecast": {
@@ -66,7 +66,7 @@ def test_existing_manifest_bootstraps_first_nonfresh_attempt_as_degraded() -> No
     baseline = context_status_from_manifest(manifest)
     failed = context_status_payload(
         baseline,
-        datetime(2026, 8, 21, 15, 15, tzinfo=timezone.utc),
+        datetime(2026, 8, 21, 15, 15, tzinfo=UTC),
         "failed",
         error=RuntimeError("offline"),
     )

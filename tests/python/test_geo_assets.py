@@ -3,11 +3,11 @@ from __future__ import annotations
 import json
 import math
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import pytest
 from PIL import Image
-
 from scripts import generate_geo
 from scripts.generate_geo import CITIES, _cities, _coastal_coverage, _polygons, _rasterize_ocean, city_display_name, city_key
 
@@ -93,7 +93,18 @@ EXPECTED_COVERAGE_HASHES = {
     "smoke-coverage-mask-v3.png": "874e90af2e0d52795670c3d6aa486ca0c14f6affb4c79d662dd3f4013827e552",
 }
 PUBLIC_CITY_FIELDS = {"name", "searchName", "region", "country", "lon", "lat", "priority", "mobile"}
-MOBILE_CITY_NAMES = {"Vancouver", "Toronto", "Los Angeles", "Chicago", "New York", "Mexico City", "Anchorage", "Whitehorse", "Yellowknife", "Iqaluit"}
+MOBILE_CITY_NAMES = {
+    "Vancouver",
+    "Toronto",
+    "Los Angeles",
+    "Chicago",
+    "New York",
+    "Mexico City",
+    "Anchorage",
+    "Whitehorse",
+    "Yellowknife",
+    "Iqaluit",
+}
 HOMONYM_DISPLAY_NAMES = {"Portland, ME", "Portland, OR", "Charleston, SC", "Charleston, WV"}
 KEPT_EXTRA_DISPLAY_NAMES = {
     "Calgary",
@@ -212,7 +223,9 @@ def test_v3_map_label_catalog_is_complete_and_deterministic() -> None:
     assert len(payload["cities"]) == 74
     assert len(cities) == 1211
     assert len(landmarks) == 60
-    assert {country: sum(label["country"] == country for label in cities) for country in EXPECTED_MAP_CITY_COUNTS} == EXPECTED_MAP_CITY_COUNTS
+    assert {
+        country: sum(label["country"] == country for label in cities) for country in EXPECTED_MAP_CITY_COUNTS
+    } == EXPECTED_MAP_CITY_COUNTS
     assert [label["collisionRank"] for label in labels] == list(range(len(labels)))
     assert len({label["id"] for label in labels}) == len(labels)
     assert all(label["id"].startswith("ne:") for label in cities)
@@ -224,7 +237,9 @@ def test_v3_map_label_catalog_is_complete_and_deterministic() -> None:
     by_country = {country: [label for label in landmarks if label["country"] == country] for country in EXPECTED_MAP_CITY_COUNTS}
     for country, country_landmarks in by_country.items():
         assert len(country_landmarks) == 20, country
-        assert {category: sum(label["category"] == category for label in country_landmarks) for category in generate_geo.LANDMARK_CATEGORIES} == {
+        assert {
+            category: sum(label["category"] == category for label in country_landmarks) for category in generate_geo.LANDMARK_CATEGORIES
+        } == {
             "natural": 7,
             "park": 7,
             "cultural": 6,
@@ -243,7 +258,8 @@ def test_curated_and_hawaiian_map_label_tiers_preserve_product_semantics() -> No
     city_labels = [label for label in payload["mapLabels"] if label["kind"] == "city"]
     for curated in payload["cities"]:
         matches = [
-            label for label in city_labels
+            label
+            for label in city_labels
             if label["country"] == curated["country"]
             and label["name"] == curated["name"]
             and label["lon"] == curated["lon"]
@@ -251,10 +267,17 @@ def test_curated_and_hawaiian_map_label_tiers_preserve_product_semantics() -> No
         ]
         assert len(matches) == 1, curated["name"]
         spec = next(city for city in CITIES if city_display_name(city) == curated["name"])
-        expected_tier = "overview" if city_key(spec) in generate_geo.OVERVIEW_CITY_KEYS else ("primary" if curated["priority"] == 1 else "secondary")
+        expected_tier = (
+            "overview" if city_key(spec) in generate_geo.OVERVIEW_CITY_KEYS else ("primary" if curated["priority"] == 1 else "secondary")
+        )
         assert matches[0]["tier"] == expected_tier
     assert {label["name"] for label in city_labels if label["tier"] == "overview"} == {
-        "Anchorage", "Vancouver", "Los Angeles", "Chicago", "New York", "Mexico City",
+        "Anchorage",
+        "Vancouver",
+        "Los Angeles",
+        "Chicago",
+        "New York",
+        "Mexico City",
     }
     hawaii = [label for label in city_labels if label["name"] in EXPECTED_HAWAII_LABELS]
     assert {label["name"] for label in hawaii} == EXPECTED_HAWAII_LABELS
@@ -289,7 +312,7 @@ def test_generated_earth_texture_is_correct_size_and_budgeted() -> None:
     assert not (ROOT / "public" / "geo" / "earth-dark.webp").exists()
 
 
-def _coverage_sample(values, lon: float, lat: float) -> int:
+def _coverage_sample(values: Any, lon: float, lat: float) -> int:
     x = round((lon + 145.0) / 100.0 * (values.shape[1] - 1))
     y = round((72.0 - lat) / 62.0 * (values.shape[0] - 1))
     return int(values[y, x])
@@ -333,7 +356,7 @@ def test_polygon_iterator_handles_polygon_and_multipolygon() -> None:
     assert list(_polygons({"type": "MultiPolygon", "coordinates": [polygon, polygon]})) == [polygon, polygon]
 
 
-def test_ocean_rasterization_preserves_polygon_holes_as_land(monkeypatch) -> None:
+def test_ocean_rasterization_preserves_polygon_holes_as_land(monkeypatch: Any) -> None:
     monkeypatch.setattr(generate_geo, "CONTEXT_BOUNDS", (0.0, 0.0, 4.0, 4.0))
     monkeypatch.setattr(generate_geo, "CONTEXT_WIDTH", 5)
     monkeypatch.setattr(generate_geo, "CONTEXT_HEIGHT", 5)
@@ -346,7 +369,7 @@ def test_ocean_rasterization_preserves_polygon_holes_as_land(monkeypatch) -> Non
     assert not ocean[y_halo + 2, x_halo + 2]
 
 
-def test_coastal_distance_includes_the_limit_and_accounts_for_latitude(monkeypatch) -> None:
+def test_coastal_distance_includes_the_limit_and_accounts_for_latitude(monkeypatch: Any) -> None:
     monkeypatch.setattr(generate_geo, "CONTEXT_WIDTH", 5)
     monkeypatch.setattr(generate_geo, "CONTEXT_HEIGHT", 3)
     monkeypatch.setattr(generate_geo, "COASTAL_BUFFER_KM", 200)
@@ -415,9 +438,7 @@ def test_phoenix_is_only_new_priority_1_city() -> None:
     assert generated["Phoenix"]["priority"] == 1
     assert generated["Phoenix"]["country"] == "USA"
     new_priority_1 = [
-        city_display_name(city)
-        for city in CITIES
-        if city["nameascii"] not in ORIGINAL_CITY_PRIORITIES and city["priority"] == 1
+        city_display_name(city) for city in CITIES if city["nameascii"] not in ORIGINAL_CITY_PRIORITIES and city["priority"] == 1
     ]
     assert new_priority_1 == ["Phoenix"]
     for city in CITIES:
@@ -534,11 +555,12 @@ def test_cities_skips_invalid_or_out_of_bounds_coordinates(monkeypatch: pytest.M
     out_of_bounds = _city_feature("Boston", "USA", "Massachusetts", 0.0, 51.5)
     non_numeric = _city_feature("Boston", "USA", "Massachusetts", -71.057, 42.361)
     non_numeric["geometry"]["coordinates"] = ["-71.057", 42.361]
-    for payload in (
+    cases: list[dict[str, Any]] = [
         {"features": [invalid]},
         {"features": [out_of_bounds]},
         {"features": [non_numeric]},
         {"features": []},
-    ):
+    ]
+    for payload in cases:
         with pytest.raises(RuntimeError, match="missing expected cities"):
             _cities(payload)

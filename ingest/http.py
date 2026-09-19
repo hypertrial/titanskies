@@ -9,25 +9,29 @@ from urllib.parse import urlparse
 import requests
 from requests.adapters import HTTPAdapter
 
+from ingest import __version__
 from ingest.auth import redact
+from ingest.config import Settings
 from ingest.perf import bounded_timeout, current_budget, current_metrics, record_http
 
 DEFAULT_TIMEOUT = 60
 DEFAULT_MAX_BYTES = 5 * 1024 * 1024
-USER_AGENT = "TitanSkies/0.1.0 (+https://github.com/hypertrial/titanskies)"
+USER_AGENT = f"TitanSkies/{__version__} (+https://github.com/hypertrial/titanskies)"
 GLOBAL_HTTP_LIMIT = 12
 HTTP_LIMIT_MAX = 16
-REGISTERED_ENDPOINT_HOSTS = frozenset({
-    "api.weather.gc.ca",
-    "cwfis.cfs.nrcan.gc.ca",
-    "geo.weather.gc.ca",
-    "geoserver.cwfif.nrcan.gc.ca",
-    "nomads.ncep.noaa.gov",
-    "services3.arcgis.com",
-    "sinaica.inecc.gob.mx",
-    "www.airnowapi.org",
-    "www.env.gov.bc.ca",
-})
+REGISTERED_ENDPOINT_HOSTS = frozenset(
+    {
+        "api.weather.gc.ca",
+        "cwfis.cfs.nrcan.gc.ca",
+        "geo.weather.gc.ca",
+        "geoserver.cwfif.nrcan.gc.ca",
+        "nomads.ncep.noaa.gov",
+        "services3.arcgis.com",
+        "sinaica.inecc.gob.mx",
+        "www.airnowapi.org",
+        "www.env.gov.bc.ca",
+    }
+)
 
 _LOCAL = threading.local()
 _POOL_SIZE = GLOBAL_HTTP_LIMIT
@@ -56,11 +60,33 @@ class HttpFetchError(RuntimeError):
         self.provider_outage = provider_outage
 
 
-def configure_http_limit(limit: int) -> None:
+def configure_http_limit(limit: int, settings: Settings | None = None) -> None:
     global _GLOBAL_SEMAPHORE, _POOL_SIZE, _SESSION_GENERATION
     _POOL_SIZE = max(1, min(HTTP_LIMIT_MAX, limit))
     _GLOBAL_SEMAPHORE = threading.BoundedSemaphore(_POOL_SIZE)
     _SESSION_GENERATION += 1
+    hrrr = settings.hrrr_concurrency if settings is not None else _PROVIDER_LIMITS["nomads.ncep.noaa.gov"]
+    firework = settings.firework_concurrency if settings is not None else _PROVIDER_LIMITS["geo.weather.gc.ca"]
+    sinaica = settings.sinaica_concurrency if settings is not None else _PROVIDER_LIMITS["sinaica.inecc.gob.mx"]
+    rebuilt = {
+        "nomads.ncep.noaa.gov": threading.BoundedSemaphore(hrrr),
+        "geo.weather.gc.ca": threading.BoundedSemaphore(firework),
+        "www.airnowapi.org": threading.BoundedSemaphore(_PROVIDER_LIMITS["www.airnowapi.org"]),
+        "sinaica.inecc.gob.mx": threading.BoundedSemaphore(sinaica),
+        "www.env.gov.bc.ca": threading.BoundedSemaphore(_PROVIDER_LIMITS["www.env.gov.bc.ca"]),
+    }
+    _PROVIDER_SEMAPHORES.clear()
+    _PROVIDER_SEMAPHORES.update(rebuilt)
+
+
+def require_host(url: str, hosts: frozenset[str]) -> None:
+    host = (urlparse(url).hostname or "").lower()
+    if host not in hosts:
+        raise ValueError(f"blocked host {host or url}")
+
+
+def clean_text(value: Any, limit: int = 120) -> str:
+    return " ".join(str(value).split())[:limit]
 
 
 def _session() -> requests.Session:
@@ -167,7 +193,7 @@ def fetch(
             last_error = exc
             if attempt + 1 >= attempts or not exc.retryable:
                 raise
-            delay = min(8.0, 0.4 * (2 ** attempt)) * (0.5 + random.random())
+            delay = min(8.0, 0.4 * (2**attempt)) * (0.5 + random.random())
             bounded_delay = bounded_timeout(delay)
             if bounded_delay is None or bounded_delay < delay:
                 raise HttpFetchError("ingest acquisition deadline reached", host=host, retryable=False, provider_outage=True) from exc
@@ -236,7 +262,9 @@ def _request(
                     record_http()
                     status = response.status_code
                     retryable = status in {500, 502, 503, 504}
-                    raise HttpFetchError(f"{status} {response.reason}", host=host, status=status, retryable=retryable, provider_outage=retryable)
+                    raise HttpFetchError(
+                        f"{status} {response.reason}", host=host, status=status, retryable=retryable, provider_outage=retryable
+                    )
                 allowed_host(response.url, hosts)
                 content_length = response.headers.get("Content-Length")
                 if content_length and int(content_length) > max_bytes:

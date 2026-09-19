@@ -7,11 +7,13 @@ import runpy
 import shutil
 import subprocess
 import sys
-from datetime import datetime, timedelta, timezone
+import tomllib
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Any
 
+from ingest import __version__
 from ingest.context_contracts import CONTEXT_RASTER_BUDGET_BYTES
-
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -27,6 +29,19 @@ def test_container_services_share_one_hardened_image_and_local_port() -> None:
         digest = line.split("@sha256:", 1)[1].split()[0]
         assert digest.isalnum() and len(digest) == 64
     assert "pip install" not in dockerfile
+    assert "python3-venv" not in dockerfile
+    assert not any("apt-get" in line and "python3" in line for line in dockerfile.splitlines())
+    assert "UV_PYTHON=3.12" in dockerfile
+    assert "UV_PYTHON_INSTALL_DIR=/opt/uv/python" in dockerfile
+    assert "uv python install 3.12" in dockerfile
+    assert "COPY --from=build /opt/uv/python /opt/uv/python" in dockerfile
+    assert "COPY --from=build --chown=node:node /opt/uv/python /opt/uv/python" not in dockerfile
+    assert "COPY --from=build --chown=node:node /app/scripts /app/scripts" not in dockerfile
+    assert "COPY --from=build --chown=node:node /app/scripts/container-entrypoint.sh /app/scripts/container-entrypoint.sh" in dockerfile
+    assert "COPY --from=build --chown=node:node /app/scripts/run-web.mjs /app/scripts/run-web.mjs" in dockerfile
+    assert "COPY --from=build --chown=node:node /app/scripts/run_python.sh /app/scripts/run_python.sh" in dockerfile
+    assert "COPY --from=build --chown=node:node /app/scripts/watch_context.py /app/scripts/watch_context.py" in dockerfile
+    assert "COPY --from=build --chown=node:node /app/scripts/check-publication.py /app/scripts/check-publication.py" in dockerfile
     assert "USER node" in dockerfile
     assert "image: ghcr.io/hypertrial/titanskies:${TITANSKIES_VERSION:-latest}" in compose
     assert compose.count("<<: *service") == 2
@@ -38,6 +53,12 @@ def test_container_services_share_one_hardened_image_and_local_port() -> None:
     assert "cap_drop: [ALL]" in compose
     assert 'security_opt: ["no-new-privileges:true"]' in compose
     assert "data:/var/lib/titanskies:ro" in compose
+
+
+def test_package_versions_match() -> None:
+    package_version = json.loads((ROOT / "package.json").read_text(encoding="utf-8"))["version"]
+    pyproject_version = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))["project"]["version"]
+    assert package_version == pyproject_version == __version__
 
 
 def test_native_distribution_assets_are_absent() -> None:
@@ -66,9 +87,7 @@ def test_license_report_includes_every_locked_python_variant(tmp_path: Path) -> 
 
     report = json.loads((tmp_path / "artifacts/license-report.json").read_text(encoding="utf-8"))
     locked = {(item["name"], item["version"]) for item in report["python"]}
-    assert ("numpy", "2.4.6") in locked
     assert ("numpy", "2.5.3") in locked
-    assert ("tifffile", "2026.3.3") in locked
     assert ("tifffile", "2026.9.9") in locked
     accepted = runpy.run_path(str(scripts / "license_report.py"))["accepted"]
     assert accepted("Apache-2.0 AND LGPL-3.0-or-later AND MIT")
@@ -90,6 +109,7 @@ def _release_check_fixture(tmp_path: Path) -> tuple[Path, list[str]]:
     (root / "scripts").mkdir(parents=True)
     shutil.copy2(ROOT / "scripts/check_public_release.py", root / "scripts/check_public_release.py")
     shutil.copy2(ROOT / "package.json", root / "package.json")
+    shutil.copy2(ROOT / "pyproject.toml", root / "pyproject.toml")
     shutil.copytree(ROOT / "shared", root / "shared")
     shutil.copytree(ROOT / "ingest", root / "ingest")
     (root / "docs/releases").mkdir(parents=True)
@@ -97,7 +117,8 @@ def _release_check_fixture(tmp_path: Path) -> tuple[Path, list[str]]:
     shutil.copy2(ROOT / f"docs/releases/v{version}.md", root / f"docs/releases/v{version}.md")
     (root / "src/data").mkdir(parents=True)
     (root / "src/data/contextSchema.ts").write_text(
-        'const retired = new Set(["firms", "hms"]);\n', encoding="utf-8",
+        'const retired = new Set(["firms", "hms"]);\n',
+        encoding="utf-8",
     )
     shutil.copy2(ROOT / "Dockerfile", root / "Dockerfile")
     return root, [sys.executable, str(root / "scripts/check_public_release.py")]
@@ -150,9 +171,7 @@ def test_public_release_check_rejects_returned_native_assets_and_instructions(tm
     assert "retired native distribution asset is present" in asset_result.stderr
 
     retired_asset.unlink()
-    (root / "README.md").write_text(
-        "Install the native service with systemd.\n", encoding="utf-8"
-    )
+    (root / "README.md").write_text("Install the native service with systemd.\n", encoding="utf-8")
     instruction_result = subprocess.run(check, cwd=root, capture_output=True, text=True)
     assert instruction_result.returncode == 1
     assert "retired native distribution instruction in README.md" in instruction_result.stderr
@@ -175,25 +194,23 @@ def _publication_for_probe(tmp_path: Path) -> tuple[Path, Path, dict, bytes]:
     shutil.copytree(source_root / "context/assets", tmp_path / "context/assets")
     manifest = json.loads((source_root / source_pointer["manifestPath"]).read_text(encoding="utf-8"))
     generated = datetime.fromisoformat(manifest["generatedAt"].replace("Z", "+00:00"))
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     target = now.replace(minute=0, second=0, microsecond=0)
     delta = target - generated
 
-    def shift(value):
+    def shift(value: Any) -> Any:
         if isinstance(value, dict):
             return {key: shift(child) for key, child in value.items()}
         if isinstance(value, list):
             return [shift(child) for child in value]
         if isinstance(value, str) and value.endswith("Z"):
             try:
-                return (datetime.fromisoformat(value.replace("Z", "+00:00")) + delta).isoformat().replace(
-                    "+00:00", "Z"
-                )
+                return (datetime.fromisoformat(value.replace("Z", "+00:00")) + delta).isoformat().replace("+00:00", "Z")
             except ValueError:
                 return value
         return value
 
-    def localize(value):
+    def localize(value: Any) -> Any:
         if isinstance(value, dict):
             return {key: localize(child) for key, child in value.items()}
         if isinstance(value, list):
@@ -230,16 +247,12 @@ def test_publication_probe_checks_freshness_and_content_hashes(tmp_path: Path) -
     env = {**os.environ, "TITANSKIES_DATA_DIR": str(tmp_path), "CONTEXT_WATCH_SECONDS": "3600"}
 
     def probe() -> int:
-        return subprocess.run(
-            [sys.executable, ROOT / "scripts/check-publication.py"], cwd=ROOT, env=env, timeout=10
-        ).returncode
+        return subprocess.run([sys.executable, ROOT / "scripts/check-publication.py"], cwd=ROOT, env=env, timeout=10).returncode
 
     assert probe() == 0
 
     pointer = json.loads(pointer_path.read_text(encoding="utf-8"))
-    pointer_path.write_text(
-        json.dumps({**pointer, "manifestUrl": "https://example.invalid/manifest.json"}), encoding="utf-8"
-    )
+    pointer_path.write_text(json.dumps({**pointer, "manifestUrl": "https://example.invalid/manifest.json"}), encoding="utf-8")
     assert probe() == 1
     pointer_path.write_text(json.dumps(pointer), encoding="utf-8")
 

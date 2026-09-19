@@ -1,31 +1,5 @@
-import { devices, expect, test, type Page } from "@playwright/test";
-
-async function waitForReady(page: Page) {
-  await expect(page.getByTestId("loading-state")).toBeHidden({ timeout: 20_000 });
-  await expect(page.locator("canvas")).toHaveCount(1);
-}
-
-async function openMore(page: Page) {
-  await page.getByRole("button", { name: "More options" }).click();
-  return page.getByRole("dialog", { name: "More" });
-}
-
-async function searchAndSelectMapLabel(page: Page, name: string) {
-  const trigger = page.getByRole("button", { name: "Search cities" });
-  if (await trigger.isVisible()) await trigger.click();
-  const search = page.getByTestId("location-search-input");
-  await search.fill(name);
-  await search.press("Enter");
-  const label = page.locator(".map-label.city").filter({ hasText: name }).first();
-  await expect(label).toBeVisible();
-  const [labelBox, canvasBox] = await Promise.all([label.boundingBox(), page.getByTestId("interactive-globe").boundingBox()]);
-  expect(labelBox).toBeTruthy();
-  expect(canvasBox).toBeTruthy();
-  await page.getByTestId("interactive-globe").click({ position: {
-    x: (labelBox?.x ?? 0) + (labelBox?.width ?? 0) / 2 - (canvasBox?.x ?? 0),
-    y: (labelBox?.y ?? 0) + (labelBox?.height ?? 0) / 2 - (canvasBox?.y ?? 0),
-  } });
-}
+import { devices, expect, test } from "@playwright/test";
+import { openMore, searchAndSelectMapLabel, waitForReady } from "./explorer.fixtures";
 
 test.use({ ...devices["Pixel 5"], deviceScaleFactor: 1 });
 

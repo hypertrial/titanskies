@@ -2,7 +2,7 @@
 
 import { CONTEXT_DETAIL_GRID, UI_FORECAST_HORIZON_HOURS, uiForecastHorizonHours, visibleForecastRun } from "@/data/contextSchema";
 import type { ContextManifest } from "@/data/contextSchema";
-import { livePosition, playbackAt, residentIndices, timelineSpanMs } from "@/data/timeline";
+import { livePosition, playbackAt, residentIndices, timelineEntry, timelineSpanMs } from "@/data/timeline";
 import { useMemo } from "react";
 
 export function useForecastPlaybackModel(
@@ -20,11 +20,7 @@ export function useForecastPlaybackModel(
   // Keep the playback timeline stable across the once-per-second live-clock render.
   // Its entries change only when the visible publication-hour window changes.
   const forecastEntries = useMemo(
-    () => forecastFrames.map((frame, index) => ({
-      scanId: `forecast-${index}`,
-      observationStart: frame.validTime,
-      manifestUrl: frame.textureUrl ?? "",
-    })),
+    () => forecastFrames.map(timelineEntry),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [forecastTimelineKey],
   );

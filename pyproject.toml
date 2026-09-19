@@ -1,9 +1,9 @@
 [project]
 name = "titanskies"
-version = "0.1.0"
+version = "0.1.5"
 description = "Self-hosted North American smoke, air-quality, and wildfire data publisher"
 license = "MIT"
-requires-python = ">=3.11"
+requires-python = ">=3.12,<3.14"
 dependencies = [
   "numpy>=2.0,<3",
   "Pillow>=11.0",
@@ -18,32 +18,16 @@ dev = [
   "mypy>=1.18,<2",
   "packaging>=24.2",
   "pytest>=8.3",
+  "ruff>=0.13",
 ]
 
 [tool.mypy]
 python_version = "3.12"
 files = [
-  "api/context.py",
-  "ingest/auth.py",
-  "ingest/blob_store.py",
-  "ingest/config.py",
-  "ingest/context_types.py",
-  "ingest/context_contracts.py",
-  "ingest/context_sources.py",
-  "ingest/context_forecasts.py",
-  "ingest/context_pipeline.py",
-  "ingest/context_gc.py",
-  "ingest/cron.py",
-  "ingest/local_store.py",
-  "ingest/sources/context_http.py",
-  "ingest/sources/context_raster.py",
-  "ingest/sources/wildfires.py",
-  "ingest/sources/firework.py",
-  "ingest/sources/hrrr.py",
-  "ingest/sources/airnow.py",
-  "ingest/sources/bc_air.py",
-  "ingest/sources/sinaica.py",
-  "ingest/sources/aqhi.py",
+  "ingest",
+  "api",
+  "scripts",
+  "tests/python",
 ]
 disallow_untyped_defs = true
 check_untyped_defs = true
@@ -51,8 +35,29 @@ no_implicit_optional = true
 warn_redundant_casts = true
 warn_unused_ignores = true
 ignore_missing_imports = true
-follow_imports = "skip"
+follow_imports = "normal"
+explicit_package_bases = true
 show_error_codes = true
+
+[tool.ruff]
+line-length = 140
+target-version = "py312"
+src = ["ingest", "api", "scripts", "tests/python"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["ingest", "api"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/python/test_release.py" = ["E501"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+skip-magic-trailing-comma = false
+line-ending = "auto"
 
 [tool.pytest.ini_options]
 testpaths = ["tests/python"]

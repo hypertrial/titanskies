@@ -1,21 +1,15 @@
-import { afterEach, expect, it } from "vitest";
+import { expect, it } from "vitest";
 import { createHash } from "node:crypto";
-import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 
+import { installTempDataDir } from "../../tests/support/tempDataDir";
 import { GET, HEAD } from "./[...path]/route";
 
-const previousRoot = process.env.TITANSKIES_DATA_DIR;
-
-afterEach(() => {
-  if (previousRoot === undefined) delete process.env.TITANSKIES_DATA_DIR;
-  else process.env.TITANSKIES_DATA_DIR = previousRoot;
-});
+const createDataDir = installTempDataDir();
 
 it("streams hashed assets with immutable caching and supports HEAD", async () => {
-  const directory = await mkdtemp(path.join(tmpdir(), "titanskies-route-"));
-  process.env.TITANSKIES_DATA_DIR = directory;
+  const directory = await createDataDir("titanskies-route-");
   const png = Buffer.from("89504e470d0a1a0a", "hex");
   const digest = createHash("sha256").update(png).digest("hex").slice(0, 20);
   await mkdir(path.join(directory, `context/assets/${digest}`), { recursive: true });
@@ -35,8 +29,7 @@ it("streams hashed assets with immutable caching and supports HEAD", async () =>
 });
 
 it("returns a no-store 404 for invalid paths", async () => {
-  const directory = await mkdtemp(path.join(tmpdir(), "titanskies-route-"));
-  process.env.TITANSKIES_DATA_DIR = directory;
+  await createDataDir("titanskies-route-");
   const response = await GET(new Request("http://localhost/data/test"), {
     params: Promise.resolve({ path: ["..", "secret.json"] }),
   });

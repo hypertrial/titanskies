@@ -1,5 +1,6 @@
 import { defineConfig, globalIgnores } from "eslint/config";
 import nextVitals from "eslint-config-next/core-web-vitals";
+import globals from "globals";
 
 export default defineConfig([
   ...nextVitals,
@@ -14,5 +15,12 @@ export default defineConfig([
       "react-hooks/set-state-in-effect": "off",
     },
   },
-  globalIgnores([".next/**", ".next-*/**", "node_modules/**", "public/demo/**", "ingest/**", "api/**", "scripts/**", "tests/python/**", "next-env.d.ts", ".local/**", "dist/**"]),
+  {
+    files: ["scripts/**/*.mjs"],
+    languageOptions: {
+      globals: globals.node,
+      sourceType: "module",
+    },
+  },
+  globalIgnores([".next/**", ".next-*/**", "node_modules/**", "public/demo/**", "ingest/**", "api/**", "tests/python/**", "next-env.d.ts", ".local/**", "dist/**"]),
 ]);

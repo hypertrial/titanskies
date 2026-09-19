@@ -1,0 +1,13 @@
+#!/bin/sh
+set -eu
+
+cd "$(dirname "$0")/.."
+
+./scripts/run_python.sh scripts/generate_demo.py
+
+generated_status=$(git status --short -- public/demo public/geo shared/smoke-coverage-mask-v1.png shared/smoke-coverage-mask-v2.png shared/smoke-coverage-mask-v3.png)
+if [ -n "$generated_status" ]; then
+  echo "Generated assets are not current:" >&2
+  echo "$generated_status" >&2
+  exit 1
+fi

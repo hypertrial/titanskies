@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import re
 from dataclasses import dataclass
@@ -30,7 +31,7 @@ def _validate_blob_settings(token: str, store_id: str, public_base_url: str) -> 
         raise ValueError("PUBLIC_BLOB_BASE_URL must match the configured public Vercel Blob store")
 
 
-def _load_env_files() -> None:
+def load_env_files() -> None:
     for name in (".env.local", ".env"):
         path = _ROOT / name
         if not path.is_file():
@@ -69,6 +70,23 @@ def _env_float(name: str, default: float) -> float:
         raise ValueError(f"{name} must be a number") from exc
 
 
+def watch_limits() -> tuple[int, int, int]:
+    limits = json.loads((_ROOT / "shared" / "runtime-limits.json").read_text(encoding="utf-8"))["watchSeconds"]
+    return int(limits["default"]), int(limits["min"]), int(limits["max"])
+
+
+def watch_interval_seconds(raw: str | int | None = None) -> int:
+    default, minimum, maximum = watch_limits()
+    value = default if raw is None else raw
+    if isinstance(value, str) and not value.strip():
+        value = default
+    try:
+        seconds = int(value)
+    except (TypeError, ValueError):
+        seconds = default
+    return min(maximum, max(minimum, seconds))
+
+
 def _env_choice(name: str, default: str, choices: set[str]) -> str:
     raw = os.environ.get(name)
     value = default if raw is None or not raw.strip() else raw.strip().lower()
@@ -88,6 +106,7 @@ class Settings:
     local_cache_dir: Path = _ROOT / ".local" / "cache"
     data_url_prefix: str = "/data"
     retention_hours: int = 48
+    watch_seconds: int = 900
     lock_seconds: int = 420
     context_orphan_gc_enabled: bool = True
     airnow_api_key: str = ""
@@ -107,13 +126,19 @@ class Settings:
     sinaica_concurrency: int = 4
     sinaica_min_stations: int = 8
     sinaica_stale_rate: float = 0.85
-    wfigs_incidents_url: str = "https://services3.arcgis.com/T4QMspbfLg3qTGWY/arcgis/rest/services/WFIGS_Incident_Locations_Current/FeatureServer/0/query"
-    wfigs_perimeters_url: str = "https://services3.arcgis.com/T4QMspbfLg3qTGWY/arcgis/rest/services/WFIGS_Interagency_Perimeters_Current/FeatureServer/0/query"
+    wfigs_incidents_url: str = (
+        "https://services3.arcgis.com/T4QMspbfLg3qTGWY/arcgis/rest/services/WFIGS_Incident_Locations_Current/FeatureServer/0/query"
+    )
+    wfigs_perimeters_url: str = (
+        "https://services3.arcgis.com/T4QMspbfLg3qTGWY/arcgis/rest/services/WFIGS_Interagency_Perimeters_Current/FeatureServer/0/query"
+    )
     cwfis_url: str = "https://geoserver.cwfif.nrcan.gc.ca/geoserver/wfs"
     cwfis_perimeters_url: str = "https://cwfis.cfs.nrcan.gc.ca/geoserver/public/ows"
     ingest_budget_seconds: int = 300
     http_concurrency: int = 12
     context_source_concurrency: int = 3
+    # Default 2 is measurement-gated; keep 1 until benchmark_context shows a wall-time win under 768 MiB RSS.
+    compose_concurrency: int = 1
 
     def __post_init__(self) -> None:
         if self.storage_backend not in {"local", "blob"}:
@@ -128,8 +153,8 @@ class Settings:
             object.__setattr__(self, "public_blob_base_url", normalized_base)
 
     @classmethod
-    def from_env(cls) -> "Settings":
-        _load_env_files()
+    def from_env(cls) -> Settings:
+        load_env_files()
         return cls(
             context_source=_env_choice("CONTEXT_SOURCE", "live", {"demo", "live"}),
             storage_backend=_env_choice("STORAGE_BACKEND", "local", {"blob", "local"}),
@@ -140,6 +165,7 @@ class Settings:
             local_cache_dir=Path(os.environ.get("TITANSKIES_CACHE_DIR") or _ROOT / ".local" / "cache"),
             data_url_prefix="/data",
             retention_hours=_env_int("FRAME_RETENTION_HOURS", 48, 24, 168),
+            watch_seconds=watch_interval_seconds(os.environ.get("CONTEXT_WATCH_SECONDS")),
             lock_seconds=_env_int("INGEST_LOCK_SECONDS", 420, 60, 420),
             context_orphan_gc_enabled=_env_bool("CONTEXT_ORPHAN_GC_ENABLED", True),
             airnow_api_key=os.environ.get("AIRNOW_API_KEY", ""),
@@ -166,4 +192,5 @@ class Settings:
             ingest_budget_seconds=_env_int("INGEST_BUDGET_SECONDS", 300, 60, 300),
             http_concurrency=_env_int("INGEST_HTTP_CONCURRENCY", 12, 1, 16),
             context_source_concurrency=_env_int("CONTEXT_SOURCE_CONCURRENCY", 3, 1, 6),
+            compose_concurrency=_env_int("COMPOSE_CONCURRENCY", 1, 1, 4),
         )

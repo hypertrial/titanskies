@@ -13,9 +13,10 @@ coverage
 .mypy_cache
 .ruff_cache
 .venv*
-macos/TitanSkies/.build
-macos/TitanSkies/.build-icon
-macos/TitanSkies/.swiftpm
+docs/
+tmp/
+.pad/
+*.md
 **/__pycache__
 *.py[cod]
 *.log

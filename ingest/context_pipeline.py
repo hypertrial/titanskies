@@ -5,11 +5,10 @@ import logging
 import uuid
 from concurrent.futures import Future, ThreadPoolExecutor
 from contextvars import copy_context
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from ingest.auth import redact
-from ingest.local_store import FrameStore, open_cache_store, open_store
 from ingest.config import Settings
 from ingest.context_contracts import (
     CONTEXT_BOUNDS,
@@ -19,34 +18,35 @@ from ingest.context_contracts import (
     published_context_version,
     validate_context_manifest,
 )
-from ingest.forecast_composer import outlook_horizon_for_version
-from ingest.forecast_native_cache import NATIVE_SPOOL_MAX_BYTES, NativeFieldCache
-from ingest.http import configure_http_limit
-from ingest.perf import (
-    ingest_run,
-    timed_phase,
-)
-from ingest.context_demo import _demo_manifest
+from ingest.context_demo import demo_manifest
+from ingest.context_forecasts import attach_v8_forecasts, complete_integrated
 from ingest.context_gc import reconcile_orphans
-from ingest.context_forecasts import _attach_v8_forecasts, _complete_integrated
 from ingest.context_publish import (
     CONTEXT_LATEST_PATH,
     CONTEXT_LOCK_PATH,
     CONTEXT_STATUS_PATH,
-    _cleanup_context_assets,
-    _json_bytes,
-    load_json,
-    _previous_context,
-    _seed_asset_memo,
+    cleanup_context_assets,
     context_status_from_manifest,
-    context_status_payload,
     context_status_metrics,
+    context_status_payload,
+    json_bytes,
+    load_json,
+    previous_context,
+    seed_asset_memo,
     write_context_status,
 )
 from ingest.context_sources import (
     apply_light_sources,
     gather_light_sources,
-    _state,
+    source_state,
+)
+from ingest.forecast_composer import outlook_horizon_for_version
+from ingest.forecast_native_cache import NATIVE_SPOOL_MAX_BYTES, NativeFieldCache
+from ingest.http import configure_http_limit
+from ingest.local_store import FrameStore, open_cache_store, open_store
+from ingest.perf import (
+    ingest_run,
+    timed_phase,
 )
 
 LOGGER = logging.getLogger("titanskies.context")
@@ -85,11 +85,11 @@ def _live_manifest(
 
     def build_v8_forecast() -> None:
         with timed_phase("forecastWave"):
-            _attach_v8_forecasts(manifest, store, previous, now, settings, native_cache)
+            attach_v8_forecasts(manifest, store, previous, now, settings, native_cache)
 
     forecast_future = forecast_executor.submit(forecast_context.run, build_v8_forecast)
     try:
-        gathered = gather_light_sources(manifest, settings, store, now, previous, contract_version)
+        gathered = gather_light_sources(manifest, settings, store, now, previous)
         if forecast_future is not None:
             try:
                 forecast_future.result()
@@ -103,14 +103,16 @@ def _live_manifest(
         forecast_exc = forecast_error
         LOGGER.warning("v8 native forecast failed: %s", redact(str(forecast_exc)))
         safe_error = redact(str(forecast_exc))
-        manifest["sources"].setdefault(
-            "firework", _state("firework", now, None, status="error", error=safe_error)
-        )
-        manifest["sources"].setdefault("hrrr", _state(
-            "hrrr", now, None,
-            status="error" if settings.hrrr_smoke_enabled else "unavailable",
-            error=safe_error if settings.hrrr_smoke_enabled else "HRRR_SMOKE_ENABLED is off",
-        ))
+        if "firework" not in manifest["sources"]:
+            manifest["sources"]["firework"] = source_state("firework", now, None, status="unavailable")
+        if "hrrr" not in manifest["sources"]:
+            manifest["sources"]["hrrr"] = source_state(
+                "hrrr",
+                now,
+                None,
+                status="unavailable" if not settings.hrrr_smoke_enabled else "error",
+                error="HRRR_SMOKE_ENABLED is off" if not settings.hrrr_smoke_enabled else None,
+            )
         prior_forecasts = ((previous or {}).get("forecasts") or {}) if (previous or {}).get("version") == 8 else {}
         prior_best = prior_forecasts.get("best") or {}
         prior_times = [str(frame.get("validTime") or "") for frame in prior_best.get("frames", [])]
@@ -124,10 +126,11 @@ def _live_manifest(
             }
             manifest["forecast"] = retained
         else:
-            manifest["forecasts"] = {"firework": {"frames": []}, "hrrr": {"frames": []}, "best": {"frames": []}}
-            manifest["forecast"] = {"frames": []}
+            best = {"frames": [], "error": safe_error}
+            manifest["forecasts"] = {"firework": {"frames": []}, "hrrr": {"frames": []}, "best": best}
+            manifest["forecast"] = best
 
-    apply_light_sources(manifest, gathered, settings, now, previous, contract_version)
+    apply_light_sources(manifest, gathered, settings, now, previous)
     manifest["displayBounds"] = published_display_bounds
     manifest["monitorRegions"] = list(published_monitor_regions)
 
@@ -136,9 +139,9 @@ def _live_manifest(
 
 def run_context_ingest(settings: Settings | None = None, now: datetime | None = None) -> dict[str, Any]:
     settings = settings or Settings.from_env()
-    now = now or datetime.now(timezone.utc)
+    now = now or datetime.now(UTC)
     contract_version = published_context_version(settings)
-    configure_http_limit(settings.http_concurrency)
+    configure_http_limit(settings.http_concurrency, settings)
     with ingest_run(budget_seconds=settings.ingest_budget_seconds) as (metrics, _budget):
         store = open_store(settings)
         lease = store.acquire_lease(CONTEXT_LOCK_PATH, uuid.uuid4().hex, now, now + timedelta(seconds=settings.lock_seconds))
@@ -146,13 +149,13 @@ def run_context_ingest(settings: Settings | None = None, now: datetime | None = 
             return {"ok": True, "skipped": True, "reason": "context ingest already running", **metrics.snapshot()}
         native_cache = None
         try:
-            previous, previous_manifest_path = _previous_context(store)
+            previous, previous_manifest_path = previous_context(store)
             previous_status = load_json(store, CONTEXT_STATUS_PATH)
             if not isinstance(previous_status, dict) and previous:
                 previous_status = context_status_from_manifest(previous)
             live = settings.context_source == "live"
             reusable_previous = previous if previous and previous.get("mode") == settings.context_source else None
-            if reusable_previous is not None and not _seed_asset_memo(store, reusable_previous):
+            if reusable_previous is not None and not seed_asset_memo(store, reusable_previous, workers=settings.http_concurrency):
                 reusable_previous = None
             cache_store = open_cache_store(settings)
             native_cache = NativeFieldCache(
@@ -164,9 +167,9 @@ def run_context_ingest(settings: Settings | None = None, now: datetime | None = 
                 manifest = (
                     _live_manifest(settings, store, now, reusable_previous, native_cache)
                     if live
-                    else _demo_manifest(store, now, settings, previous=reusable_previous)
+                    else demo_manifest(store, now, settings, previous=reusable_previous)
                 )
-            if not _complete_integrated(
+            if not complete_integrated(
                 manifest.get("forecast"),
                 require_versions=True,
                 require_detail=True,
@@ -176,14 +179,10 @@ def run_context_ingest(settings: Settings | None = None, now: datetime | None = 
                 raise RuntimeError("no compatible complete smoke outlook is available")
             with timed_phase("validation"):
                 validate_context_manifest(manifest)
-                encoded = _json_bytes(manifest)
+                encoded = json_bytes(manifest)
             digest = hashlib.sha256(encoded).hexdigest()[:20]
             manifest_path = f"context/manifests/{digest}.json"
-            forecast_cache_to_finalize = (
-                active_forecast_cache
-                if manifest["forecast"].get("integratedStatus") != "retained"
-                else None
-            )
+            forecast_cache_to_finalize = active_forecast_cache if manifest["forecast"].get("integratedStatus") != "retained" else None
             with timed_phase("publish"):
                 manifest_url = store.put_bytes(manifest_path, encoded, "application/json", cache_seconds=60 * 60 * 24 * 30, overwrite=False)
                 if forecast_cache_to_finalize:
@@ -191,13 +190,18 @@ def run_context_ingest(settings: Settings | None = None, now: datetime | None = 
             with timed_phase("cleanup"):
                 if forecast_cache_to_finalize:
                     forecast_cache_to_finalize.gc()
-            pointer = {"version": manifest["version"], "manifestUrl": manifest_url, "manifestPath": manifest_path, "updatedAt": iso_utc(now)}
+            pointer = {
+                "version": manifest["version"],
+                "manifestUrl": manifest_url,
+                "manifestPath": manifest_path,
+                "updatedAt": iso_utc(now),
+            }
             with timed_phase("finalPublication"):
                 store.put_json(CONTEXT_LATEST_PATH, pointer, cache_seconds=60, overwrite=True)
             if not live:
                 try:
                     with timed_phase("publicCleanup"):
-                        _cleanup_context_assets(store, manifest, manifest_path, previous, previous_manifest_path)
+                        cleanup_context_assets(store, manifest, manifest_path, previous, previous_manifest_path)
                 except Exception:
                     LOGGER.warning("public cleanup failed; publication preserved", exc_info=True)
             if live and settings.context_orphan_gc_enabled:

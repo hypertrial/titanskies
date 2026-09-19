@@ -2,21 +2,30 @@ from __future__ import annotations
 
 import io
 import math
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from PIL import Image
 
 from ingest.config import Settings
 from ingest.context_contracts import CONTEXT_HEIGHT, CONTEXT_WIDTH, DISPLAY_BOUNDS, FIREWORK_BBOX, in_display_bounds, iso_utc
-from ingest.sources.context_http import _get
-from ingest.sources.context_raster import _clip_ring, _validated_png, image_png, rasterize_perimeters
+from ingest.sources.context_http import get
+from ingest.sources.context_raster import clip_ring, image_png, validated_png
 
 WFIGS_URL = "https://data-nifc.opendata.arcgis.com/"
 CWFIS_URL = "https://cwfis.cfs.nrcan.gc.ca/"
 WFIGS_MAX_FEATURES = 10_000
-WFIGS_CURRENT_FIELDS = "OBJECTID,IrwinID,IncidentName,IncidentTypeCategory,IncidentTypeKind,IncidentSize,FinalAcres,DiscoveryAcres,FireDiscoveryDateTime,ModifiedOnDateTime_dt,IncidentManagementOrganization,ContainmentDateTime"
-WFIGS_LEGACY_FIELDS = "OBJECTID,IrwinID,IncidentName,IncidentTypeCategory,IncidentTypeKind,DailyAcres,CalculatedAcres,DiscoveryAcres,FireDiscoveryDateTime,ModifiedOnDateTime_dt,IncidentManagementOrganization,ContainmentDateTime"
+WFIGS_CURRENT_FIELDS = (
+    "OBJECTID,IrwinID,IncidentName,IncidentTypeCategory,IncidentTypeKind,IncidentSize,"
+    "FinalAcres,DiscoveryAcres,FireDiscoveryDateTime,ModifiedOnDateTime_dt,"
+    "IncidentManagementOrganization,ContainmentDateTime"
+)
+WFIGS_LEGACY_FIELDS = (
+    "OBJECTID,IrwinID,IncidentName,IncidentTypeCategory,IncidentTypeKind,DailyAcres,"
+    "CalculatedAcres,DiscoveryAcres,FireDiscoveryDateTime,ModifiedOnDateTime_dt,"
+    "IncidentManagementOrganization,ContainmentDateTime"
+)
+
 
 def _arcgis_features(payload: Any) -> list[dict[str, Any]]:
     if isinstance(payload, dict) and isinstance(payload.get("error"), dict):
@@ -36,13 +45,16 @@ def _arcgis_feature_pages(url: str, params: dict[str, Any], *, out_fields: str, 
     object_ids: set[object] = set()
     offset = 0
     while True:
-        payload = _get(url, params={
-            **params,
-            "outFields": out_fields,
-            "orderByFields": "OBJECTID ASC",
-            "resultOffset": str(offset),
-            "resultRecordCount": str(page_size),
-        }).json()
+        payload = get(
+            url,
+            params={
+                **params,
+                "outFields": out_fields,
+                "orderByFields": "OBJECTID ASC",
+                "resultOffset": str(offset),
+                "resultRecordCount": str(page_size),
+            },
+        ).json()
         page = _arcgis_features(payload)
         if not page:
             if payload.get("exceededTransferLimit") is True:
@@ -84,7 +96,14 @@ def parse_wfigs(incidents_payload: Any, perimeters_payload: Any) -> tuple[list[d
         identifier = str(attrs.get("IrwinID") or attrs.get("IncidentID") or attrs.get("OBJECTID") or "").strip("{}")
         if not identifier:
             continue
-        acres = next((value for name in ("IncidentSize", "FinalAcres", "DailyAcres", "CalculatedAcres", "DiscoveryAcres") if (value := _number(attrs.get(name))) is not None), None)
+        acres = next(
+            (
+                value
+                for name in ("IncidentSize", "FinalAcres", "DailyAcres", "CalculatedAcres", "DiscoveryAcres")
+                if (value := _number(attrs.get(name))) is not None
+            ),
+            None,
+        )
         updated = _parse_source_time(attrs.get("ModifiedOnDateTime_dt"), attrs.get("FireDiscoveryDateTime"))
         if updated is None:
             continue
@@ -104,13 +123,15 @@ def parse_wfigs(incidents_payload: Any, perimeters_payload: Any) -> tuple[list[d
     rings: list[list[list[float]]] = []
     for feature in _arcgis_features(perimeters_payload):
         attrs = feature.get("attributes") or feature.get("properties") or {}
-        fire_type = str(attrs.get("attr_IncidentTypeCategory") or attrs.get("poly_IncidentTypeCategory") or attrs.get("IncidentTypeCategory") or "WF").upper()
+        fire_type = str(
+            attrs.get("attr_IncidentTypeCategory") or attrs.get("poly_IncidentTypeCategory") or attrs.get("IncidentTypeCategory") or "WF"
+        ).upper()
         if "RX" in fire_type or "PRESCRIB" in fire_type:
             continue
         geometry = feature.get("geometry") or {}
         for ring in geometry.get("rings", []):
             clean = [point for value in ring if (point := _coordinate(value)) is not None]
-            clipped = _clip_ring(clean)
+            clipped = clip_ring(clean)
             if len(clipped) >= 3:
                 rings.append(clipped)
     return sorted(incidents.values(), key=lambda item: item["id"]), rings
@@ -122,7 +143,9 @@ def fetch_wfigs_parts(
     params = {
         "where": "1=1",
         "returnGeometry": "true",
-        "geometry": f"{DISPLAY_BOUNDS['west']:.0f},{DISPLAY_BOUNDS['south']:.0f},{DISPLAY_BOUNDS['east']:.0f},{DISPLAY_BOUNDS['north']:.0f}",
+        "geometry": (
+            f"{DISPLAY_BOUNDS['west']:.0f},{DISPLAY_BOUNDS['south']:.0f},{DISPLAY_BOUNDS['east']:.0f},{DISPLAY_BOUNDS['north']:.0f}"
+        ),
         "geometryType": "esriGeometryEnvelope",
         "inSR": "4326",
         "outSR": "4326",
@@ -130,13 +153,19 @@ def fetch_wfigs_parts(
     }
     try:
         incidents_payload = _arcgis_feature_pages(
-            settings.wfigs_incidents_url, params, out_fields=WFIGS_CURRENT_FIELDS, page_size=1_000,
+            settings.wfigs_incidents_url,
+            params,
+            out_fields=WFIGS_CURRENT_FIELDS,
+            page_size=1_000,
         )
     except ValueError as exc:
         if "outFields" not in str(exc):
             raise
         incidents_payload = _arcgis_feature_pages(
-            settings.wfigs_incidents_url, params, out_fields=WFIGS_LEGACY_FIELDS, page_size=1_000,
+            settings.wfigs_incidents_url,
+            params,
+            out_fields=WFIGS_LEGACY_FIELDS,
+            page_size=1_000,
         )
     try:
         perimeters_payload = _arcgis_feature_pages(
@@ -169,7 +198,14 @@ def parse_cwfis(payload: Any) -> tuple[list[dict[str, Any]], list[list[list[floa
         geometry = feature.get("geometry") or {}
         if int(props.get("fire_was_prescribed") or 0) == 1:
             continue
-        identifier = str(props.get("national_fire_id") or props.get("agency_fire_id") or props.get("firename") or props.get("fireid") or props.get("id") or "")
+        identifier = str(
+            props.get("national_fire_id")
+            or props.get("agency_fire_id")
+            or props.get("firename")
+            or props.get("fireid")
+            or props.get("id")
+            or ""
+        )
         if not identifier or identifier in seen:
             continue
         seen.add(identifier)
@@ -184,24 +220,35 @@ def parse_cwfis(payload: Any) -> tuple[list[dict[str, Any]], list[list[list[floa
             None,
         )
         updated = _parse_source_time(
-            props.get("status_date"), props.get("record_start"), props.get("lastrepdate"),
-            props.get("updated"), props.get("date"),
+            props.get("status_date"),
+            props.get("record_start"),
+            props.get("lastrepdate"),
+            props.get("updated"),
+            props.get("date"),
         )
         if updated is None:
             continue
-        incidents.append({
-            "id": f"CA:{identifier}",
-            "name": str(props.get("agency_fire_id") or props.get("firename") or props.get("fireid") or "Reported wildfire"),
-            "country": "CA",
-            "lat": lat,
-            "lon": lon,
-            "status": str(props.get("stage_of_control_status") or props.get("stage_of_control") or props.get("stageofcontrol") or props.get("status") or "Reported wildfire"),
-            "areaHectares": hectares,
-            "sourceArea": hectares,
-            "sourceAreaUnit": "hectares" if hectares is not None else None,
-            "updatedAt": updated,
-            "sourceUrl": CWFIS_URL,
-        })
+        incidents.append(
+            {
+                "id": f"CA:{identifier}",
+                "name": str(props.get("agency_fire_id") or props.get("firename") or props.get("fireid") or "Reported wildfire"),
+                "country": "CA",
+                "lat": lat,
+                "lon": lon,
+                "status": str(
+                    props.get("stage_of_control_status")
+                    or props.get("stage_of_control")
+                    or props.get("stageofcontrol")
+                    or props.get("status")
+                    or "Reported wildfire"
+                ),
+                "areaHectares": hectares,
+                "sourceArea": hectares,
+                "sourceAreaUnit": "hectares" if hectares is not None else None,
+                "updatedAt": updated,
+                "sourceUrl": CWFIS_URL,
+            }
+        )
         rings.extend(_geojson_rings(kind, coords))
     return sorted(incidents, key=lambda item: item["id"]), rings
 
@@ -210,7 +257,7 @@ def fetch_cwfis(
     settings: Settings,
     now: datetime | None = None,
 ) -> tuple[list[dict[str, Any]], list[list[list[float]]], datetime | None]:
-    now = now or datetime.now(timezone.utc)
+    now = now or datetime.now(UTC)
     params = {
         "service": "WFS",
         "version": "2.0.0",
@@ -220,14 +267,14 @@ def fetch_cwfis(
         "srsName": "EPSG:4326",
         "CQL_FILTER": f"record_end AFTER {iso_utc(now)} AND fire_was_prescribed = 0",
     }
-    payload = _get(settings.cwfis_url, params=params).json()
+    payload = get(settings.cwfis_url, params=params).json()
     incidents, rings = parse_cwfis(payload)
     observed: datetime | None
     try:
         observed = datetime.fromisoformat(str(payload["timeStamp"]).replace("Z", "+00:00"))
         if observed.tzinfo is None:
-            observed = observed.replace(tzinfo=timezone.utc)
-        observed = observed.astimezone(timezone.utc)
+            observed = observed.replace(tzinfo=UTC)
+        observed = observed.astimezone(UTC)
         if observed.year <= 2000 or observed > now + timedelta(minutes=5):
             observed = None
     except (KeyError, OverflowError, TypeError, ValueError):
@@ -236,18 +283,30 @@ def fetch_cwfis(
 
 
 def fetch_cwfis_perimeter_texture(settings: Settings) -> bytes:
-    response = _get(settings.cwfis_perimeters_url, params={
-        "SERVICE": "WMS", "VERSION": "1.1.1", "REQUEST": "GetMap",
-        "LAYERS": "public:m3polygons", "STYLES": "", "FORMAT": "image/png",
-        "TRANSPARENT": "TRUE", "SRS": "EPSG:4326", "BBOX": FIREWORK_BBOX,
-        "WIDTH": str(CONTEXT_WIDTH), "HEIGHT": str(CONTEXT_HEIGHT),
-    }, timeout=90)
-    data = _validated_png(response.content, "CWFIS perimeter", (CONTEXT_WIDTH, CONTEXT_HEIGHT))
+    response = get(
+        settings.cwfis_perimeters_url,
+        params={
+            "SERVICE": "WMS",
+            "VERSION": "1.1.1",
+            "REQUEST": "GetMap",
+            "LAYERS": "public:m3polygons",
+            "STYLES": "",
+            "FORMAT": "image/png",
+            "TRANSPARENT": "TRUE",
+            "SRS": "EPSG:4326",
+            "BBOX": FIREWORK_BBOX,
+            "WIDTH": str(CONTEXT_WIDTH),
+            "HEIGHT": str(CONTEXT_HEIGHT),
+        },
+        timeout=90,
+    )
+    data = validated_png(response.content, "CWFIS perimeter", (CONTEXT_WIDTH, CONTEXT_HEIGHT))
     source = Image.open(io.BytesIO(data)).convert("RGBA")
     alpha = source.getchannel("A")
     outline = Image.new("RGBA", source.size, (255, 188, 87, 0))
     outline.putalpha(alpha.point(lambda value: min(210, value)))
     return image_png(outline)
+
 
 def _number(value: Any) -> float | None:
     try:
@@ -260,10 +319,14 @@ def _number(value: Any) -> float | None:
 def _parse_source_time(*values: Any) -> str | None:
     for value in values:
         try:
-            parsed = datetime.fromtimestamp(value / 1000, tz=timezone.utc) if isinstance(value, (int, float)) and math.isfinite(value) else datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+            parsed = (
+                datetime.fromtimestamp(value / 1000, tz=UTC)
+                if isinstance(value, (int, float)) and math.isfinite(value)
+                else datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+            )
             if parsed.tzinfo is None:
-                parsed = parsed.replace(tzinfo=timezone.utc)
-            return iso_utc(parsed.astimezone(timezone.utc))
+                parsed = parsed.replace(tzinfo=UTC)
+            return iso_utc(parsed.astimezone(UTC))
         except (OSError, OverflowError, TypeError, ValueError):
             continue
     return None
@@ -290,7 +353,7 @@ def _geojson_rings(kind: str, coords: Any) -> list[list[list[float]]]:
             polygon = [polygon]
         for ring in polygon or []:
             clean = [point for value in ring if (point := _coordinate(value)) is not None]
-            clipped = _clip_ring(clean)
+            clipped = clip_ring(clean)
             if len(clipped) >= 3:
                 rings.append(clipped)
     return rings

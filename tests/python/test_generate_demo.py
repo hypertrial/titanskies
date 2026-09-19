@@ -1,7 +1,6 @@
 from pathlib import Path
 
 import pytest
-
 from scripts.generate_demo import ROOT, _output_path
 
 

@@ -2,6 +2,7 @@
 set -eu
 
 cd "$(dirname "$0")/.."
+. scripts/lib/wait-for-health.sh
 
 command -v docker >/dev/null 2>&1 || { echo "Docker is required" >&2; exit 1; }
 docker info >/dev/null 2>&1 || { echo "Docker is not running" >&2; exit 1; }
@@ -36,7 +37,13 @@ for arch in arm64 amd64; do
   cache_volume="titanskies-platform-cache-$arch-$$"
   web_container="titanskies-platform-web-$arch-$$"
 
-  docker buildx build --platform "$platform" --load --tag "$image" .
+  if [ "${GITHUB_ACTIONS:-}" = true ]; then
+    docker buildx build --platform "$platform" --load \
+      --cache-from type=gha --cache-to type=gha,mode=max \
+      --tag "$image" .
+  else
+    docker buildx build --platform "$platform" --load --tag "$image" .
+  fi
   actual_arch=$(docker image inspect "$image" --format '{{.Architecture}}')
   [ "$actual_arch" = "$arch" ] || {
     echo "$image has architecture $actual_arch, expected $arch" >&2
@@ -60,18 +67,8 @@ for arch in arm64 amd64; do
     --volume "$data_volume:/var/lib/titanskies:ro" \
     "$image" web >/dev/null
 
-  ready=0
-  attempt=0
-  while [ "$attempt" -lt 90 ]; do
-    if docker exec "$web_container" node -e \
-      "Promise.all([fetch('http://127.0.0.1:8080/api/healthz'),fetch('http://127.0.0.1:8080/api/context-health?expectedVersion=8')]).then(r=>process.exit(r.every(x=>x.ok)?0:1)).catch(()=>process.exit(1))"; then
-      ready=1
-      break
-    fi
-    attempt=$((attempt + 1))
-    sleep 2
-  done
-  if [ "$ready" -ne 1 ]; then
+  if ! wait_for_health docker exec "$web_container" node -e \
+    "Promise.all([fetch('http://127.0.0.1:8080/api/healthz'),fetch('http://127.0.0.1:8080/api/context-health?expectedVersion=8')]).then(r=>process.exit(r.every(x=>x.ok)?0:1)).catch(()=>process.exit(1))"; then
     docker logs "$web_container" >&2 || true
     echo "$platform health smoke failed" >&2
     exit 1

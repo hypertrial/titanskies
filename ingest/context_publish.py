@@ -4,6 +4,7 @@ import hashlib
 import io
 import json
 import logging
+import os
 import re
 import threading
 from datetime import datetime
@@ -12,9 +13,16 @@ from typing import Any
 from PIL import Image
 
 from ingest.auth import redact
-from ingest.local_store import FrameStore
-from ingest.context_contracts import CONTEXT_JSON_BUDGET_BYTES, CONTEXT_RASTER_BUDGET_BYTES, MONITOR_JSON_BUDGET_BYTES, iso_utc, validate_context_manifest
+from ingest.context_contracts import (
+    CONTEXT_JSON_BUDGET_BYTES,
+    CONTEXT_RASTER_BUDGET_BYTES,
+    MONITOR_JSON_BUDGET_BYTES,
+    iso_utc,
+    validate_context_manifest,
+)
+from ingest.http import GLOBAL_HTTP_LIMIT
 from ingest.http_pool import map_bounded
+from ingest.local_store import FrameStore
 from ingest.perf import current_asset_memo, current_budget, current_metrics
 
 LOGGER = logging.getLogger("titanskies.context")
@@ -77,7 +85,9 @@ def context_status_payload(
         "outcome": outcome,
         "contextVersion": (manifest or {}).get("version") or (previous or {}).get("contextVersion"),
         "forecastFrameCount": len(frames) if manifest else (previous or {}).get("forecastFrameCount", 0),
-        "forecastLastValidTime": (frames[-1].get("validTime") if frames else None) if manifest else (previous or {}).get("forecastLastValidTime"),
+        "forecastLastValidTime": (frames[-1].get("validTime") if frames else None)
+        if manifest
+        else (previous or {}).get("forecastLastValidTime"),
         "consecutiveNonFresh": 0 if fresh else int((previous or {}).get("consecutiveNonFresh") or 0) + 1,
         "failureCategory": type(error).__name__ if error else None,
         "metrics": metrics or {},
@@ -91,14 +101,18 @@ def write_context_status(store: FrameStore, payload: dict[str, Any]) -> None:
         LOGGER.warning("context status publication failed", exc_info=True)
 
 
-def _json_bytes(payload: Any, budget: int = CONTEXT_JSON_BUDGET_BYTES) -> bytes:
+def json_bytes(payload: Any, budget: int = CONTEXT_JSON_BUDGET_BYTES) -> bytes:
     encoded = json.dumps(payload, separators=(",", ":"), sort_keys=True, allow_nan=False).encode("utf-8")
     if len(encoded) > budget:
         raise ValueError(f"context JSON exceeds {budget} bytes")
     return encoded
 
 
-def _put_asset(store: FrameStore, name: str, data: bytes, content_type: str, budget: int | None = None) -> str:
+def _blob_store(store: FrameStore) -> bool:
+    return type(store).__name__ == "BlobFrameStore"
+
+
+def put_asset(store: FrameStore, name: str, data: bytes, content_type: str, budget: int | None = None) -> str:
     limit = budget if budget is not None else (CONTEXT_RASTER_BUDGET_BYTES if content_type == "image/png" else CONTEXT_JSON_BUDGET_BYTES)
     if len(data) > limit:
         raise ValueError(f"{name} exceeds {limit} bytes")
@@ -109,49 +123,52 @@ def _put_asset(store: FrameStore, name: str, data: bytes, content_type: str, bud
         cached = memo.get(pathname)
     if cached:
         return cached
-    overwrite = False
-    try:
-        existing = store.get_bytes(pathname, max_bytes=limit)
-    except (RuntimeError, ValueError):
-        existing = None
-        overwrite = True
-    if existing == data:
-        url = store.url_for(pathname)
+    # Content-addressed blob keys embed the digest. Skip the pre-GET and treat PUT conflict as the existing object.
+    if _blob_store(store):
+        url = store.put_bytes(pathname, data, content_type, cache_seconds=60 * 60 * 24 * 30, overwrite=False)
     else:
-        url = store.put_bytes(
-            pathname,
-            data,
-            content_type,
-            cache_seconds=60 * 60 * 24 * 30,
-            overwrite=overwrite or existing is not None,
-        )
+        overwrite = False
+        try:
+            existing = store.get_bytes(pathname, max_bytes=limit)
+        except (RuntimeError, ValueError):
+            existing = None
+            overwrite = True
+        if existing == data:
+            url = store.url_for(pathname)
+        else:
+            url = store.put_bytes(
+                pathname,
+                data,
+                content_type,
+                cache_seconds=60 * 60 * 24 * 30,
+                overwrite=overwrite or existing is not None,
+            )
     with _ASSET_MEMO_LOCK:
         memo[pathname] = url
     return url
 
 
-def _put_json_asset(store: FrameStore, name: str, payload: Any, budget: int = CONTEXT_JSON_BUDGET_BYTES) -> str:
-    return _put_asset(store, name, _json_bytes(payload, budget), "application/json", budget)
+def put_json_asset(store: FrameStore, name: str, payload: Any, budget: int = CONTEXT_JSON_BUDGET_BYTES) -> str:
+    return put_asset(store, name, json_bytes(payload, budget), "application/json", budget)
 
 
-def _put_monitor_asset(store: FrameStore, name: str, monitors: list[dict[str, Any]]) -> str:
+def put_monitor_asset(store: FrameStore, name: str, monitors: list[dict[str, Any]]) -> str:
     payload = {"monitors": monitors, "count": len(monitors), "sourceCount": len(monitors)}
-    return _put_json_asset(store, name, payload, MONITOR_JSON_BUDGET_BYTES)
+    return put_json_asset(store, name, payload, MONITOR_JSON_BUDGET_BYTES)
 
 
-def _asset_path_from_url(url: str) -> str | None:
+def asset_path_from_url(url: str) -> str | None:
     if "context/assets/" not in url:
         return None
     path = "context/assets/" + url.split("context/assets/", 1)[1].split("?", 1)[0].split("#", 1)[0]
     return path if _ASSET_PATH.fullmatch(path) else None
 
 
-def _seed_asset_memo(store: FrameStore, previous: dict[str, Any] | None) -> bool:
+def seed_asset_memo(store: FrameStore, previous: dict[str, Any] | None, *, workers: int | None = None) -> bool:
     memo = current_asset_memo()
-    valid = True
+    pairs: list[tuple[str, str]] = []
 
     def collect(value: Any) -> None:
-        nonlocal valid
         if isinstance(value, dict):
             for nested in value.values():
                 collect(nested)
@@ -159,25 +176,48 @@ def _seed_asset_memo(store: FrameStore, previous: dict[str, Any] | None) -> bool
             for nested in value:
                 collect(nested)
         elif isinstance(value, str):
-            path = _asset_path_from_url(value)
+            path = asset_path_from_url(value)
             if path:
-                try:
-                    data = store.get_bytes(path, max_bytes=max(CONTEXT_RASTER_BUDGET_BYTES, MONITOR_JSON_BUDGET_BYTES))
-                except (OSError, RuntimeError, ValueError):
-                    data = None
-                digest = path.split("/", 3)[2]
-                if data is None or hashlib.sha256(data).hexdigest()[:20] != digest:
-                    valid = False
-                else:
-                    memo[path] = value
+                pairs.append((path, value))
 
     collect(previous)
+    verify = os.environ.get("CONTEXT_VERIFY_ASSETS") == "1"
+    # Content-addressed blob keys embed the digest; HEAD 200 is sufficient trust unless CONTEXT_VERIFY_ASSETS=1.
+    if _blob_store(store) and not verify:
+
+        def present(item: tuple[str, str]) -> bool:
+            path, _url = item
+            try:
+                return store.exists(path)
+            except (OSError, RuntimeError, ValueError):
+                return False
+
+        concurrency = max(1, workers or GLOBAL_HTTP_LIMIT)
+        results = map_bounded(pairs, present, workers=concurrency)
+        if not all(results):
+            memo.clear()
+            return False
+        for path, url in pairs:
+            memo[path] = url
+        return True
+
+    valid = True
+    for path, url in pairs:
+        try:
+            data = store.get_bytes(path, max_bytes=max(CONTEXT_RASTER_BUDGET_BYTES, MONITOR_JSON_BUDGET_BYTES))
+        except (OSError, RuntimeError, ValueError):
+            data = None
+        digest = path.split("/", 3)[2]
+        if data is None or hashlib.sha256(data).hexdigest()[:20] != digest:
+            valid = False
+        else:
+            memo[path] = url
     if not valid:
         memo.clear()
     return valid
 
 
-def _previous_context(store: FrameStore) -> tuple[dict[str, Any] | None, str | None]:
+def previous_context(store: FrameStore) -> tuple[dict[str, Any] | None, str | None]:
     pointer = load_json(store, CONTEXT_LATEST_PATH)
     if not pointer:
         return None, None
@@ -192,8 +232,10 @@ def _previous_context(store: FrameStore) -> tuple[dict[str, Any] | None, str | N
     except ValueError:
         return None, path
 
+
 _ASSET_PATH = re.compile(r"^context/assets/[0-9a-f]{20}/[A-Za-z0-9._-]+$")
 _MANIFEST_PATH = re.compile(r"^context/manifests/[0-9a-f]{20}\.json$")
+
 
 def _publish_source_frames(store: FrameStore, frames: list[dict[str, Any]], name: str, encode_png: bool) -> list[dict[str, Any]]:
     published = []
@@ -201,7 +243,7 @@ def _publish_source_frames(store: FrameStore, frames: list[dict[str, Any]], name
         item = dict(frame)
         png = item.get("png")
         if encode_png and png and not item.get("textureUrl"):
-            item["textureUrl"] = _put_asset(store, name, png, "image/png")
+            item["textureUrl"] = put_asset(store, name, png, "image/png")
         if not encode_png:
             item.pop("png", None)
             item.pop("textureUrl", None)
@@ -226,18 +268,18 @@ def _load_asset_bytes(store: FrameStore, url: str) -> bytes | None:
     return data
 
 
-def _legend_url(store: FrameStore, _previous_best: dict[str, Any] | None, legend: bytes) -> str:
-    return _put_asset(store, "best-legend.png", legend, "image/png")
+def legend_url(store: FrameStore, _previous_best: dict[str, Any] | None, legend: bytes) -> str:
+    return put_asset(store, "best-legend.png", legend, "image/png")
 
 
-def _publish_integrated_frames(store: FrameStore, frames: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def publish_integrated_frames(store: FrameStore, frames: list[dict[str, Any]]) -> list[dict[str, Any]]:
     def publish(frame: dict[str, Any]) -> dict[str, Any]:
-        return _publish_integrated_frame(store, frame)
+        return publish_integrated_frame(store, frame)
 
     return map_bounded(frames, publish, workers=min(6, max(1, len(frames))))
 
 
-def _publish_integrated_frame(store: FrameStore, frame: dict[str, Any]) -> dict[str, Any]:
+def publish_integrated_frame(store: FrameStore, frame: dict[str, Any]) -> dict[str, Any]:
     if frame.get("textureUrl") and frame.get("sourceMaskUrl") and "texturePng" not in frame:
         metrics = current_metrics()
         if metrics and frame.get("detailTiles"):
@@ -255,8 +297,8 @@ def _publish_integrated_frame(store: FrameStore, frame: dict[str, Any]) -> dict[
     published = {
         "validTime": frame["validTime"],
         "modelRun": frame["modelRun"],
-        "textureUrl": _put_asset(store, "best.png", frame["texturePng"], "image/png"),
-        "sourceMaskUrl": _put_asset(store, "best-mask.png", frame["maskPng"], "image/png"),
+        "textureUrl": put_asset(store, "best.png", frame["texturePng"], "image/png"),
+        "sourceMaskUrl": put_asset(store, "best-mask.png", frame["maskPng"], "image/png"),
         "contributors": frame["contributors"],
     }
     staged_tiles = frame.get("detailTilePngs") or []
@@ -271,12 +313,14 @@ def _publish_integrated_frame(store: FrameStore, frame: dict[str, Any]) -> dict[
     for tile in staged_tiles:
         _validate_forecast_png(tile["texturePng"], "detail smoke texture")
         _validate_forecast_png(tile["maskPng"], "detail smoke mask")
-        detail_tiles.append({
-            "column": tile["column"],
-            "row": tile["row"],
-            "textureUrl": _put_asset(store, f"best-{tile['column']}-{tile['row']}.png", tile["texturePng"], "image/png"),
-            "sourceMaskUrl": _put_asset(store, f"best-mask-{tile['column']}-{tile['row']}.png", tile["maskPng"], "image/png"),
-        })
+        detail_tiles.append(
+            {
+                "column": tile["column"],
+                "row": tile["row"],
+                "textureUrl": put_asset(store, f"best-{tile['column']}-{tile['row']}.png", tile["texturePng"], "image/png"),
+                "sourceMaskUrl": put_asset(store, f"best-mask-{tile['column']}-{tile['row']}.png", tile["maskPng"], "image/png"),
+            }
+        )
     if detail_tiles:
         published["detailTiles"] = detail_tiles
         metrics = current_metrics()
@@ -296,13 +340,15 @@ def _validate_forecast_png(data: bytes, label: str) -> None:
     except (OSError, ValueError) as exc:
         raise ValueError(f"{label} must be a valid 1024x635 PNG") from exc
 
-def _cleanup_context_assets(
+
+def cleanup_context_assets(
     store: FrameStore,
     manifest: dict[str, Any],
     manifest_path: str,
     previous: dict[str, Any] | None,
     previous_manifest_path: str | None,
-    *, discover_unknown: bool = True,
+    *,
+    discover_unknown: bool = True,
 ) -> None:
     if previous_manifest_path and previous is None:
         raise ValueError("previous publication references unavailable")
@@ -338,14 +384,21 @@ def _cleanup_context_assets(
     stale_manifests = sorted(path for path in known_manifests if path not in retained_manifests)
     budget = current_budget()
     if budget and not budget.allow(5, reason="cleanup"):
-        store.put_json(CONTEXT_GC_INVENTORY, {"assets": sorted(known_assets | referenced), "manifests": sorted(known_manifests | retained_manifests)}, cache_seconds=60, overwrite=True)
+        store.put_json(
+            CONTEXT_GC_INVENTORY,
+            {"assets": sorted(known_assets | referenced), "manifests": sorted(known_manifests | retained_manifests)},
+            cache_seconds=60,
+            overwrite=True,
+        )
         return
     try:
         if stale_assets:
             store.delete_many(stale_assets)
         if stale_manifests:
             store.delete_many(stale_manifests)
-        store.put_json(CONTEXT_GC_INVENTORY, {"assets": sorted(referenced), "manifests": sorted(retained_manifests)}, cache_seconds=60, overwrite=True)
+        store.put_json(
+            CONTEXT_GC_INVENTORY, {"assets": sorted(referenced), "manifests": sorted(retained_manifests)}, cache_seconds=60, overwrite=True
+        )
     except Exception:
         LOGGER.warning("context cleanup failed; retaining extra assets", exc_info=True)
         store.put_json(

@@ -1,23 +1,25 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from datetime import datetime, timedelta
-from typing import Any, Callable
+from typing import Any
 
 from ingest.auth import redact
-from ingest.local_store import FrameStore
 from ingest.config import Settings
 from ingest.context_contracts import STALE_AFTER_HOURS, iso_utc
-from ingest.context_publish import _put_asset, _put_json_asset, _put_monitor_asset
+from ingest.context_publish import put_asset, put_json_asset, put_monitor_asset
 from ingest.context_types import SourceFailure, SourceOutcome, SourceSuccess
 from ingest.http_pool import map_isolated
+from ingest.local_store import FrameStore
 from ingest.perf import timed_source
-from ingest.sources.airnow import AIRNOW_URL
-from ingest.sources.airnow import fetch_airnow
+from ingest.sources.airnow import AIRNOW_URL, fetch_airnow
 from ingest.sources.aqhi import AQHI_COUNT_VERSION, AQHI_URL, fetch_aqhi
 from ingest.sources.bc_air import BC_AIR_URL, fetch_bc_air
 from ingest.sources.context_raster import rasterize_perimeters
 from ingest.sources.firework import FIREWORK_URL
+from ingest.sources.hrrr import HRRR_URL
+from ingest.sources.sinaica import SINAICA_COUNT_VERSION, SINAICA_URL, fetch_sinaica
 from ingest.sources.wildfires import (
     CWFIS_URL,
     WFIGS_URL,
@@ -25,8 +27,6 @@ from ingest.sources.wildfires import (
     fetch_cwfis_perimeter_texture,
     fetch_wfigs_parts,
 )
-from ingest.sources.hrrr import HRRR_URL
-from ingest.sources.sinaica import SINAICA_COUNT_VERSION, SINAICA_URL, fetch_sinaica
 
 LOGGER = logging.getLogger("titanskies.context")
 PROVENANCE = {
@@ -41,7 +41,7 @@ PROVENANCE = {
 }
 
 
-def _state(name: str, now: datetime, observed_at: datetime | None, *, status: str = "ok", error: str | None = None) -> dict[str, Any]:
+def source_state(name: str, now: datetime, observed_at: datetime | None, *, status: str = "ok", error: str | None = None) -> dict[str, Any]:
     if observed_at and status == "ok" and now - observed_at > timedelta(hours=STALE_AFTER_HOURS[name]):
         status = "stale"
     return {
@@ -53,7 +53,7 @@ def _state(name: str, now: datetime, observed_at: datetime | None, *, status: st
     }
 
 
-def _fallback_source(
+def fallback_source(
     manifest: dict[str, Any],
     previous: dict[str, Any] | None,
     source: str,
@@ -75,33 +75,16 @@ def _fallback_source(
         if last_valid is None or last_valid < now:
             observed_raw = prior_state.get("observedAt") if prior_state else None
             observed = datetime.fromisoformat(observed_raw.replace("Z", "+00:00")) if observed_raw else None
-            manifest["sources"][source] = _state(source, now, observed, status="unavailable", error=str(error))
+            manifest["sources"][source] = source_state(source, now, observed, status="unavailable", error=str(error))
             return
     if prior_state and prior_section:
         observed_raw = prior_state.get("observedAt")
         observed = datetime.fromisoformat(observed_raw.replace("Z", "+00:00")) if observed_raw else None
         age_stale = observed is None or now - observed > timedelta(hours=STALE_AFTER_HOURS[source])
-        manifest["sources"][source] = _state(source, now, observed, status="stale" if age_stale else "error", error=str(error))
+        manifest["sources"][source] = source_state(source, now, observed, status="stale" if age_stale else "error", error=str(error))
         manifest[section] = prior_section
     else:
-        manifest["sources"][source] = _state(source, now, None, status="unavailable" if missing_key else "error", error=str(error))
-
-
-def _run_source(
-    manifest: dict[str, Any],
-    previous: dict[str, Any] | None,
-    source: str,
-    section: str,
-    now: datetime,
-    build: Callable[[], tuple[dict[str, Any], datetime]],
-) -> None:
-    try:
-        payload, observed = build()
-        manifest[section] = payload
-        manifest["sources"][source] = _state(source, now, observed)
-    except Exception as exc:  # Source isolation is the product contract.
-        LOGGER.warning("%s context source failed: %s", source, redact(str(exc)))
-        _fallback_source(manifest, previous, source, section, now, exc)
+        manifest["sources"][source] = source_state(source, now, None, status="unavailable" if missing_key else "error", error=str(error))
 
 
 def _latest_incident_time(incidents: list[dict[str, Any]], fallback: datetime) -> datetime:
@@ -138,28 +121,33 @@ def gather_light_sources(
     store: FrameStore,
     now: datetime,
     previous: dict[str, Any] | None,
-    contract_version: int,
 ) -> dict[str, SourceOutcome]:
     """Acquire independent non-forecast sources without mutating their sections."""
 
     def build_airnow() -> SourceSuccess:
         monitors = fetch_airnow(settings, now, _prior_monitor_count(previous, "airnow"))
         observed = max(datetime.fromisoformat(item["observedAt"].replace("Z", "+00:00")) for item in monitors)
-        url = _put_monitor_asset(store, "airnow-monitors.json", monitors)
-        return SourceSuccess({
-            "observedAt": iso_utc(observed),
-            "monitorsUrl": url,
-            "monitorSet": {"url": url, "observedAt": iso_utc(observed), "count": len(monitors)},
-        }, observed)
+        url = put_monitor_asset(store, "airnow-monitors.json", monitors)
+        return SourceSuccess(
+            {
+                "observedAt": iso_utc(observed),
+                "monitorsUrl": url,
+                "monitorSet": {"url": url, "observedAt": iso_utc(observed), "count": len(monitors)},
+            },
+            observed,
+        )
 
     def build_bcair() -> SourceSuccess:
         monitors = fetch_bc_air(settings, now, _prior_monitor_count(previous, "bcair"))
         observed = max(datetime.fromisoformat(item["observedAt"].replace("Z", "+00:00")) for item in monitors)
-        url = _put_monitor_asset(store, "bc-monitors.json", monitors)
-        return SourceSuccess({
-            "bcMonitorsUrl": url,
-            "monitorSet": {"url": url, "observedAt": iso_utc(observed), "count": len(monitors)},
-        }, observed)
+        url = put_monitor_asset(store, "bc-monitors.json", monitors)
+        return SourceSuccess(
+            {
+                "bcMonitorsUrl": url,
+                "monitorSet": {"url": url, "observedAt": iso_utc(observed), "count": len(monitors)},
+            },
+            observed,
+        )
 
     def build_sinaica() -> SourceSuccess:
         monitors = fetch_sinaica(
@@ -169,45 +157,50 @@ def gather_light_sources(
             store=store,
         )
         observed = max(datetime.fromisoformat(item["observedAt"].replace("Z", "+00:00")) for item in monitors)
-        url = _put_monitor_asset(store, "sinaica-monitors.json", monitors)
-        return SourceSuccess({
-            "sinaicaMonitorsUrl": url,
-            "monitorSet": {
-                "url": url,
-                "observedAt": iso_utc(observed),
-                "count": len(monitors),
-                "countVersion": SINAICA_COUNT_VERSION,
+        url = put_monitor_asset(store, "sinaica-monitors.json", monitors)
+        return SourceSuccess(
+            {
+                "sinaicaMonitorsUrl": url,
+                "monitorSet": {
+                    "url": url,
+                    "observedAt": iso_utc(observed),
+                    "count": len(monitors),
+                    "countVersion": SINAICA_COUNT_VERSION,
+                },
             },
-        }, observed)
+            observed,
+        )
 
     def build_aqhi() -> SourceSuccess:
         monitors = fetch_aqhi(now, _prior_monitor_count(previous, "aqhi", AQHI_COUNT_VERSION))
         observed = max(datetime.fromisoformat(item["observedAt"].replace("Z", "+00:00")) for item in monitors)
-        url = _put_monitor_asset(store, "aqhi-monitors.json", monitors)
-        return SourceSuccess({
-            "monitorSet": {
-                "url": url,
-                "observedAt": iso_utc(observed),
-                "count": len(monitors),
-                "countVersion": AQHI_COUNT_VERSION,
+        url = put_monitor_asset(store, "aqhi-monitors.json", monitors)
+        return SourceSuccess(
+            {
+                "monitorSet": {
+                    "url": url,
+                    "observedAt": iso_utc(observed),
+                    "count": len(monitors),
+                    "countVersion": AQHI_COUNT_VERSION,
+                },
             },
-        }, observed)
+            observed,
+        )
 
     prior_fires = (previous or {}).get("fires", {})
 
     def build_wfigs() -> SourceSuccess:
         incidents, rings, perimeter_error = fetch_wfigs_parts(settings)
         observed = _latest_incident_time(incidents, now)
-        payload = {"wfigsIncidentsUrl": _put_json_asset(store, "wfigs-incidents.json", {"incidents": incidents})}
+        payload = {"wfigsIncidentsUrl": put_json_asset(store, "wfigs-incidents.json", {"incidents": incidents})}
         if rings is not None:
-            payload["wfigsPerimeterTextureUrl"] = _put_asset(
-                store, "wfigs-perimeters.png", rasterize_perimeters(rings), "image/png"
-            )
+            payload["wfigsPerimeterTextureUrl"] = put_asset(store, "wfigs-perimeters.png", rasterize_perimeters(rings), "image/png")
             perimeter_observed = now
         elif prior_fires.get("wfigsPerimeterTextureUrl"):
             payload["wfigsPerimeterTextureUrl"] = prior_fires["wfigsPerimeterTextureUrl"]
-            raw = ((previous or {}).get("sources", {}).get("wfigs") or {}).get("perimeterObservedAt") \
-                or ((previous or {}).get("sources", {}).get("wfigs") or {}).get("observedAt")
+            raw = ((previous or {}).get("sources", {}).get("wfigs") or {}).get("perimeterObservedAt") or (
+                (previous or {}).get("sources", {}).get("wfigs") or {}
+            ).get("observedAt")
             perimeter_observed = datetime.fromisoformat(raw.replace("Z", "+00:00")) if raw else observed
         else:
             perimeter_observed = None
@@ -216,10 +209,10 @@ def gather_light_sources(
     def build_cwfis() -> SourceSuccess:
         incidents, _, provider_observed = fetch_cwfis(settings, now)
         observed = provider_observed or _latest_incident_time(incidents, now)
-        payload = {"cwfisIncidentsUrl": _put_json_asset(store, "cwfis-incidents.json", {"incidents": incidents})}
+        payload = {"cwfisIncidentsUrl": put_json_asset(store, "cwfis-incidents.json", {"incidents": incidents})}
         perimeter_error = None
         try:
-            payload["cwfisPerimeterTextureUrl"] = _put_asset(
+            payload["cwfisPerimeterTextureUrl"] = put_asset(
                 store, "cwfis-perimeters.png", fetch_cwfis_perimeter_texture(settings), "image/png"
             )
             perimeter_observed = now
@@ -227,8 +220,9 @@ def gather_light_sources(
             perimeter_error = str(exc)
             if prior_fires.get("cwfisPerimeterTextureUrl"):
                 payload["cwfisPerimeterTextureUrl"] = prior_fires["cwfisPerimeterTextureUrl"]
-                raw = ((previous or {}).get("sources", {}).get("cwfis") or {}).get("perimeterObservedAt") \
-                    or ((previous or {}).get("sources", {}).get("cwfis") or {}).get("observedAt")
+                raw = ((previous or {}).get("sources", {}).get("cwfis") or {}).get("perimeterObservedAt") or (
+                    (previous or {}).get("sources", {}).get("cwfis") or {}
+                ).get("observedAt")
                 perimeter_observed = datetime.fromisoformat(raw.replace("Z", "+00:00")) if raw else observed
             else:
                 perimeter_observed = None
@@ -246,9 +240,7 @@ def gather_light_sources(
     if settings.sinaica_enabled:
         jobs.append(("sinaica", build_sinaica))
     else:
-        manifest["sources"]["sinaica"] = _state(
-            "sinaica", now, None, status="unavailable", error="SINAICA_ENABLED is off"
-        )
+        manifest["sources"]["sinaica"] = source_state("sinaica", now, None, status="unavailable", error="SINAICA_ENABLED is off")
     jobs.extend((("wfigs", build_wfigs), ("cwfis", build_cwfis)))
     jobs.append(("aqhi", build_aqhi))
     gathered = map_isolated(jobs, invoke, workers=settings.context_source_concurrency)
@@ -261,7 +253,6 @@ def apply_light_sources(
     settings: Settings,
     now: datetime,
     previous: dict[str, Any] | None,
-    contract_version: int,
 ) -> None:
     """Apply collected source outcomes with per-source last-good fallback."""
     prior_air = dict((previous or {}).get("air", {}))
@@ -269,12 +260,12 @@ def apply_light_sources(
     monitor_sets: dict[str, Any] = {}
     air_sources = ("airnow", "bcair") + (("sinaica",) if settings.sinaica_enabled else ()) + ("aqhi",)
     for source in air_sources:
-        result = gathered[source]
+        result = gathered.get(source, SourceFailure(RuntimeError(f"{source} is unavailable")))
         if isinstance(result, SourceSuccess):
             payload = dict(result.payload)
             monitor_sets[source] = payload.pop("monitorSet")
             air.update(payload)
-            manifest["sources"][source] = _state(source, now, result.observed_at)
+            manifest["sources"][source] = source_state(source, now, result.observed_at)
             continue
         exc = result.error
         LOGGER.warning("%s context source failed: %s", source, redact(str(exc)))
@@ -289,7 +280,7 @@ def apply_light_sources(
         prior_set = (prior_air.get("monitorSets") or {}).get(source)
         missing_key = source == "airnow" and not settings.airnow_api_key and isinstance(exc, PermissionError)
         if missing_key:
-            manifest["sources"][source] = _state(source, now, None, status="unavailable", error=str(exc))
+            manifest["sources"][source] = source_state(source, now, None, status="unavailable", error=str(exc))
             continue
         if prior_set:
             monitor_sets[source] = prior_set
@@ -300,13 +291,9 @@ def apply_light_sources(
             observed_raw = prior_state.get("observedAt")
             observed = datetime.fromisoformat(observed_raw.replace("Z", "+00:00")) if observed_raw else None
             is_stale = observed is None or now - observed > timedelta(hours=STALE_AFTER_HOURS[source])
-            manifest["sources"][source] = _state(
-                source, now, observed, status="stale" if is_stale else "error", error=str(exc)
-            )
+            manifest["sources"][source] = source_state(source, now, observed, status="stale" if is_stale else "error", error=str(exc))
         else:
-            manifest["sources"][source] = _state(
-                source, now, None, status="error", error=str(exc)
-            )
+            manifest["sources"][source] = source_state(source, now, None, status="error", error=str(exc))
     if monitor_sets:
         air["monitorSets"] = monitor_sets
     manifest["air"] = air
@@ -314,14 +301,13 @@ def apply_light_sources(
     prior_fires = (previous or {}).get("fires", {})
     fires: dict[str, Any] = {}
     for source in ("wfigs", "cwfis"):
-        result = gathered[source]
+        result = gathered.get(source, SourceFailure(RuntimeError(f"{source} is unavailable")))
         if isinstance(result, SourceSuccess):
             fires.update(result.payload)
             partial_stale = now - result.observed_at > timedelta(hours=STALE_AFTER_HOURS[source]) or (
-                result.perimeter_observed_at is not None
-                and now - result.perimeter_observed_at > timedelta(hours=STALE_AFTER_HOURS[source])
+                result.perimeter_observed_at is not None and now - result.perimeter_observed_at > timedelta(hours=STALE_AFTER_HOURS[source])
             )
-            state = _state(
+            state = source_state(
                 source,
                 now,
                 result.observed_at,
@@ -341,12 +327,14 @@ def apply_light_sources(
             observed = datetime.fromisoformat(observed_raw.replace("Z", "+00:00")) if observed_raw else None
             perimeter_raw = prior_state.get("perimeterObservedAt")
             perimeter_observed = datetime.fromisoformat(perimeter_raw.replace("Z", "+00:00")) if perimeter_raw else None
-            oldest_observed = min(value for value in (observed, perimeter_observed) if value is not None) if observed or perimeter_observed else None
+            oldest_observed = (
+                min(value for value in (observed, perimeter_observed) if value is not None) if observed or perimeter_observed else None
+            )
             is_stale = oldest_observed is None or now - oldest_observed > timedelta(hours=STALE_AFTER_HOURS[source])
-            state = _state(source, now, observed, status="stale" if is_stale else "error", error=str(exc))
+            state = source_state(source, now, observed, status="stale" if is_stale else "error", error=str(exc))
             if perimeter_raw:
                 state["perimeterObservedAt"] = perimeter_raw
             manifest["sources"][source] = state
         else:
-            manifest["sources"][source] = _state(source, now, None, status="error", error=str(exc))
+            manifest["sources"][source] = source_state(source, now, None, status="error", error=str(exc))
     manifest["fires"] = fires

@@ -2,13 +2,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, Literal, TypeAlias, TypedDict
+from typing import Any, Literal, TypedDict
 
-JsonScalar: TypeAlias = str | int | float | bool | None
-JsonValue: TypeAlias = JsonScalar | list["JsonValue"] | dict[str, "JsonValue"]
-JsonObject: TypeAlias = dict[str, JsonValue]
+type JsonScalar = str | int | float | bool | None
+type JsonValue = JsonScalar | list[JsonValue] | dict[str, JsonValue]
+type JsonObject = dict[str, JsonValue]
 
-SourceName: TypeAlias = Literal[
+type SourceName = Literal[
     "airnow",
     "bcair",
     "sinaica",
@@ -18,8 +18,8 @@ SourceName: TypeAlias = Literal[
     "firework",
     "hrrr",
 ]
-SectionName: TypeAlias = Literal["air", "fires", "forecast", "hrrr"]
-SourceStatus: TypeAlias = Literal["ok", "stale", "error", "unavailable"]
+type SectionName = Literal["air", "fires", "forecast", "hrrr"]
+type SourceStatus = Literal["ok", "stale", "error", "unavailable"]
 
 
 class SourceState(TypedDict):
@@ -43,9 +43,9 @@ class SourceFailure:
     error: Exception
 
 
-SourceOutcome: TypeAlias = SourceSuccess | SourceFailure
+type SourceOutcome = SourceSuccess | SourceFailure
 
-ForecastProviderName: TypeAlias = Literal["firework", "hrrr"]
+type ForecastProviderName = Literal["firework", "hrrr"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -59,4 +59,4 @@ class ProviderStageFailure:
     error: BaseException
 
 
-ProviderStageOutcome: TypeAlias = ProviderStageSuccess | ProviderStageFailure
+type ProviderStageOutcome = ProviderStageSuccess | ProviderStageFailure

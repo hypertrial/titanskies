@@ -1,17 +1,18 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Any
 from unittest.mock import patch
 
 import pytest
 
-from ingest.local_store import LocalFrameStore, StoragePage
 from ingest.context_gc import DELETE_BATCH, GRACE_SECONDS, PAGE_SIZE, PREFIXES, STATE_PATH, reconcile_orphans
-from ingest.context_publish import _cleanup_context_assets
+from ingest.context_publish import cleanup_context_assets
+from ingest.local_store import LocalFrameStore, StoragePage
 
-NOW = datetime(2026, 9, 7, tzinfo=timezone.utc)
+NOW = datetime(2026, 9, 7, tzinfo=UTC)
 ORPHAN = "context/assets/" + "a" * 20 + "/orphan.png"
 MANIFEST = "context/manifests/" + "b" * 20 + ".json"
 
@@ -22,7 +23,7 @@ def _v8_manifest_fixture() -> dict:
 
 
 @pytest.fixture
-def publication(tmp_path):
+def publication(tmp_path: Any) -> Any:
     store = LocalFrameStore(tmp_path)
     manifest = _v8_manifest_fixture()
     pointer = {"version": 8, "manifestPath": MANIFEST, "manifestUrl": store.url_for(MANIFEST), "updatedAt": NOW.isoformat()}
@@ -33,17 +34,20 @@ def publication(tmp_path):
     return store, lease, pointer, manifest
 
 
-def run(publication, now=NOW, retention_hours=48):
+def run(publication: Any, now: Any = NOW, retention_hours: Any = 48) -> None:
+    store, lease, pointer, manifest = publication
     with patch("ingest.context_gc._now", return_value=now):
-        reconcile_orphans(*publication, None, None, retention_hours=retention_hours)
+        reconcile_orphans(store, lease, pointer, manifest, None, None, retention_hours=retention_hours)
 
 
-def renew(publication, now):
+def renew(publication: Any, now: Any) -> None:
     store, lease, _, _ = publication
-    store.put_json(lease.pathname, {"owner": lease.owner, "expiresAt": (now + timedelta(seconds=420)).isoformat()}, cache_seconds=0, overwrite=True)
+    store.put_json(
+        lease.pathname, {"owner": lease.owner, "expiresAt": (now + timedelta(seconds=420)).isoformat()}, cache_seconds=0, overwrite=True
+    )
 
 
-def test_missing_previous_manifest_prevents_cleanup(publication):
+def test_missing_previous_manifest_prevents_cleanup(publication: Any) -> None:
     store, lease, pointer, manifest = publication
     run(publication)
     later = NOW + timedelta(days=2)
@@ -52,12 +56,12 @@ def test_missing_previous_manifest_prevents_cleanup(publication):
     with patch("ingest.context_gc._now", return_value=later), patch.object(store, "delete_many") as deleted:
         reconcile_orphans(store, lease, pointer, manifest, None, previous_path)
         with pytest.raises(ValueError, match="references unavailable"):
-            _cleanup_context_assets(store, manifest, MANIFEST, None, previous_path)
+            cleanup_context_assets(store, manifest, MANIFEST, None, previous_path)
     deleted.assert_not_called()
     assert store.get_bytes(ORPHAN)
 
 
-def test_rejected_cursor_restarts_discovery(publication):
+def test_rejected_cursor_restarts_discovery(publication: Any) -> None:
     store, _, _, _ = publication
     run(publication)
     state = json.loads(store.get_text(STATE_PATH))
@@ -71,9 +75,9 @@ def test_rejected_cursor_restarts_discovery(publication):
     assert recovered["pending"][ORPHAN] == NOW.timestamp()
 
 
-def test_orphan_discovery_grace_and_recovery(publication):
+def test_orphan_discovery_grace_and_recovery(publication: Any) -> None:
     store, _, pointer, manifest = publication
-    _cleanup_context_assets(store, manifest, MANIFEST, None, None, discover_unknown=False)
+    cleanup_context_assets(store, manifest, MANIFEST, None, None, discover_unknown=False)
     assert store.get_bytes(ORPHAN)
     run(publication)
     state = json.loads(store.get_text(STATE_PATH))
@@ -90,7 +94,7 @@ def test_orphan_discovery_grace_and_recovery(publication):
     assert json.loads(store.get_text("context/latest.json")) == pointer
 
 
-def test_configured_retention_controls_orphan_deletion(publication):
+def test_configured_retention_controls_orphan_deletion(publication: Any) -> None:
     store = publication[0]
     run(publication, retention_hours=24)
     before = NOW + timedelta(hours=24) - timedelta(seconds=1)
@@ -104,22 +108,27 @@ def test_configured_retention_controls_orphan_deletion(publication):
 
 
 @pytest.mark.parametrize("change", ["lease_owner", "lease_expired", "pointer", "future_state", "unsafe_path"])
-def test_unsafe_reconciliation_fails_closed(publication, change):
+def test_unsafe_reconciliation_fails_closed(publication: Any, change: Any) -> None:
     store, lease, pointer, _ = publication
     run(publication)
     later = NOW + timedelta(days=2)
     renew(publication, later)
     if change == "lease_owner":
-        store.put_json(lease.pathname, {"owner": "other", "expiresAt": (later + timedelta(minutes=5)).isoformat()}, cache_seconds=0, overwrite=True)
+        store.put_json(
+            lease.pathname, {"owner": "other", "expiresAt": (later + timedelta(minutes=5)).isoformat()}, cache_seconds=0, overwrite=True
+        )
     elif change == "lease_expired":
         store.put_json(lease.pathname, {"owner": lease.owner, "expiresAt": NOW.isoformat()}, cache_seconds=0, overwrite=True)
     elif change == "pointer":
         store.put_json("context/latest.json", {**pointer, "updatedAt": "changed"}, cache_seconds=0, overwrite=True)
     else:
         state = json.loads(store.get_text(STATE_PATH))
-        if change == "malformed_state": state["version"] = 2
-        if change == "future_state": state["pending"][ORPHAN] = later.timestamp() + 1
-        if change == "unsafe_path": state["pending"]["../secret"] = NOW.timestamp()
+        if change == "malformed_state":
+            state["version"] = 2
+        if change == "future_state":
+            state["pending"][ORPHAN] = later.timestamp() + 1
+        if change == "unsafe_path":
+            state["pending"]["../secret"] = NOW.timestamp()
         store.put_json(STATE_PATH, state, cache_seconds=0, overwrite=True)
     run(publication, later)
     assert store.get_bytes(ORPHAN)
@@ -134,7 +143,7 @@ def test_unsafe_reconciliation_fails_closed(publication, change):
         {"version": 1, "nextPrefix": 0, "cursors": [None, None], "pending": [], "lastSweep": [None, None]},
     ],
 )
-def test_invalid_reconciliation_state_resets_and_resumes_discovery(publication, payload):
+def test_invalid_reconciliation_state_resets_and_resumes_discovery(publication: Any, payload: Any) -> None:
     store = publication[0]
     if isinstance(payload, bytes):
         store.put_bytes(STATE_PATH, payload, "application/json", cache_seconds=0, overwrite=True)
@@ -150,7 +159,7 @@ def test_invalid_reconciliation_state_resets_and_resumes_discovery(publication, 
     assert store.get_bytes(ORPHAN) is None
 
 
-def test_oversized_reconciliation_state_resets_and_resumes_discovery(publication):
+def test_oversized_reconciliation_state_resets_and_resumes_discovery(publication: Any) -> None:
     store = publication[0]
     store.put_bytes(STATE_PATH, b"x" * (16 * 1024 * 1024 + 1), "application/json", cache_seconds=0, overwrite=True)
     run(publication)
@@ -159,7 +168,7 @@ def test_oversized_reconciliation_state_resets_and_resumes_discovery(publication
     assert state["pending"][ORPHAN] == NOW.timestamp()
 
 
-def test_symlinked_reconciliation_state_is_replaced_without_touching_its_target(publication, tmp_path):
+def test_symlinked_reconciliation_state_is_replaced_without_touching_its_target(publication: Any, tmp_path: Any) -> None:
     store = publication[0]
     outside = tmp_path / "outside.json"
     outside.write_text("keep", encoding="utf-8")
@@ -175,7 +184,7 @@ def test_symlinked_reconciliation_state_is_replaced_without_touching_its_target(
     assert outside.read_text(encoding="utf-8") == "keep"
 
 
-def test_referenced_candidate_resets_grace(publication):
+def test_referenced_candidate_resets_grace(publication: Any) -> None:
     store, _, _, manifest = publication
     run(publication)
     manifest["fires"]["wfigsPerimeterTextureUrl"] = store.url_for(ORPHAN)
@@ -186,16 +195,19 @@ def test_referenced_candidate_resets_grace(publication):
     assert json.loads(store.get_text(STATE_PATH))["pending"][ORPHAN] == (NOW + timedelta(days=1)).timestamp()
 
 
-def test_interrupted_checkpoint_does_not_lose_discovery(publication):
+def test_interrupted_checkpoint_does_not_lose_discovery(publication: Any) -> None:
     store = publication[0]
     put = store.put_json
     count = 0
-    def fail_second(path, *args, **kwargs):
+
+    def fail_second(path: Any, *args: Any, **kwargs: Any) -> Any:
         nonlocal count
         if path == STATE_PATH:
             count += 1
-            if count == 2: raise OSError("state unavailable")
+            if count == 2:
+                raise OSError("state unavailable")
         return put(path, *args, **kwargs)
+
     with patch.object(store, "put_json", side_effect=fail_second):
         run(publication)
     assert json.loads(store.get_text(STATE_PATH))["cursors"] == [None, None]
@@ -203,27 +215,31 @@ def test_interrupted_checkpoint_does_not_lose_discovery(publication):
     assert ORPHAN in json.loads(store.get_text(STATE_PATH))["pending"]
 
 
-def test_deleted_object_is_safe_to_retry_after_checkpoint_failure(publication):
+def test_deleted_object_is_safe_to_retry_after_checkpoint_failure(publication: Any) -> None:
     store = publication[0]
     run(publication)
     later = NOW + timedelta(seconds=GRACE_SECONDS)
     renew(publication, later)
     put = store.put_json
     count = 0
-    def fail_second(path, *args, **kwargs):
+
+    def fail_second(path: Any, *args: Any, **kwargs: Any) -> Any:
         nonlocal count
         if path == STATE_PATH:
             count += 1
-            if count == 2: raise OSError("lost deletion checkpoint")
+            if count == 2:
+                raise OSError("lost deletion checkpoint")
         return put(path, *args, **kwargs)
-    with patch.object(store, "put_json", side_effect=fail_second): run(publication, later)
+
+    with patch.object(store, "put_json", side_effect=fail_second):
+        run(publication, later)
     assert store.get_bytes(ORPHAN) is None
     assert ORPHAN in json.loads(store.get_text(STATE_PATH))["pending"]
     run(publication, later)
     assert ORPHAN not in json.loads(store.get_text(STATE_PATH))["pending"]
 
 
-def test_pages_and_deletions_are_bounded(publication):
+def test_pages_and_deletions_are_bounded(publication: Any) -> None:
     store = publication[0]
     for i in range(270):
         store.put_bytes(f"context/assets/{i:020x}/test.png", b"x", "image/png", cache_seconds=0, overwrite=True)
@@ -240,7 +256,7 @@ def test_pages_and_deletions_are_bounded(publication):
         assert len(deleted.call_args.args[0]) == 271
 
 
-def test_full_queue_can_delete_and_partial_page_cannot_overflow(publication):
+def test_full_queue_can_delete_and_partial_page_cannot_overflow(publication: Any) -> None:
     store = publication[0]
     run(publication)
     state = json.loads(store.get_text(STATE_PATH))
@@ -258,7 +274,7 @@ def test_full_queue_can_delete_and_partial_page_cannot_overflow(publication):
     assert len(json.loads(store.get_text(STATE_PATH))["pending"]) <= 4096
 
 
-def test_deletion_capacity_matches_maximum_candidate_admission(publication):
+def test_deletion_capacity_matches_maximum_candidate_admission(publication: Any) -> None:
     assert DELETE_BATCH == PAGE_SIZE * len(PREFIXES)
     store = publication[0]
     run(publication)
@@ -274,8 +290,9 @@ def test_deletion_capacity_matches_maximum_candidate_admission(publication):
     assert candidates.keys().isdisjoint(remaining)
 
 
-def test_no_work_without_finalization_reserve(publication):
+def test_no_work_without_finalization_reserve(publication: Any) -> None:
     from ingest.perf import ingest_run
+
     with ingest_run(budget_seconds=10), patch.object(publication[0], "get_authoritative_json") as get:
         run(publication)
         get.assert_not_called()

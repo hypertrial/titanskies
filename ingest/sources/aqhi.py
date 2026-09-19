@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import json
 import math
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from ingest.context_contracts import AQHI_COUNT_VERSION, in_monitor_bounds, iso_utc
+from ingest.context_contracts import AQHI_COUNT_VERSION as AQHI_COUNT_VERSION
+from ingest.context_contracts import in_monitor_bounds, iso_utc
 from ingest.http import fetch
 
 AQHI_URL = "https://api.weather.gc.ca/collections/aqhi-observations-realtime"
@@ -65,8 +66,10 @@ def parse_aqhi(payload: Any, now: datetime) -> list[dict[str, Any]]:
             continue
         item, amendment = parsed
         current = newest.get(item["id"])
-        if current is None or item["observedAt"] > current[0]["observedAt"] or (
-            item["observedAt"] == current[0]["observedAt"] and amendment and not current[1]
+        if (
+            current is None
+            or item["observedAt"] > current[0]["observedAt"]
+            or (item["observedAt"] == current[0]["observedAt"] and amendment and not current[1])
         ):
             newest[item["id"]] = (item, amendment)
     return sorted((item for item, _ in newest.values()), key=lambda item: item["id"])
@@ -123,8 +126,8 @@ def _parse_feature(feature: Any, oldest: datetime, horizon: datetime) -> tuple[d
     except (KeyError, TypeError, ValueError):
         return None
     if observed.tzinfo is None:
-        observed = observed.replace(tzinfo=timezone.utc)
-    observed = observed.astimezone(timezone.utc)
+        observed = observed.replace(tzinfo=UTC)
+    observed = observed.astimezone(UTC)
     if not math.isfinite(value) or value <= 0 or not in_monitor_bounds(lon, lat) or observed < oldest or observed > horizon:
         return None
     location_id = str(properties.get("location_id") or "").strip()

@@ -2,22 +2,46 @@ from __future__ import annotations
 
 import json
 import threading
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 from unittest.mock import patch
 
-from ingest.local_store import LocalFrameStore
 from ingest.http import allowed_host, fetch
+from ingest.local_store import LocalFrameStore
 from ingest.sources.airnow import fetch_airnow, parse_airnow
 from ingest.sources.aqhi import AQHI_COUNT_VERSION, AQHI_HOSTS, aqhi_category, aqhi_display_value, fetch_aqhi, parse_aqhi
 from ingest.sources.bc_air import HOURLY_MAX_BYTES, STATIONS_MAX_BYTES, fetch_bc_air, parse_bc_hourly, parse_bc_stations
-from ingest.sources.sinaica import fetch_sinaica, parse_sinaica_hours, parse_sinaica_json, parse_sinaica_stations, sinaica_timezone, _station_hours, _station_metadata
+from ingest.sources.sinaica import (
+    _station_hours,
+    _station_metadata,
+    fetch_sinaica,
+    parse_sinaica_hours,
+    parse_sinaica_json,
+    parse_sinaica_stations,
+    sinaica_timezone,
+)
 
 
 def test_airnow_filters_pm25_deduplicates_and_namespaces_ids() -> None:
-    base = {"Parameter": "PM2.5", "Latitude": 47.6, "Longitude": -122.3, "AQI": 82, "Value": 27.1, "Unit": "UG/M3", "UTC": "2026-08-13T17:00:00Z", "FullAQSCode": "53-033-001", "SiteName": "Seattle", "AgencyName": "PSCAA", "Category": {"Name": "Moderate"}}
-    now = datetime(2026, 8, 13, 18, tzinfo=timezone.utc)
-    records = parse_airnow([base, {**base, "UTC": "2026-08-13T18:00:00Z", "AQI": 91, "Value": 31.0}, {**base, "Parameter": "OZONE"}, {**base, "Latitude": 95}], now)
+    base = {
+        "Parameter": "PM2.5",
+        "Latitude": 47.6,
+        "Longitude": -122.3,
+        "AQI": 82,
+        "Value": 27.1,
+        "Unit": "UG/M3",
+        "UTC": "2026-08-13T17:00:00Z",
+        "FullAQSCode": "53-033-001",
+        "SiteName": "Seattle",
+        "AgencyName": "PSCAA",
+        "Category": {"Name": "Moderate"},
+    }
+    now = datetime(2026, 8, 13, 18, tzinfo=UTC)
+    records = parse_airnow(
+        [base, {**base, "UTC": "2026-08-13T18:00:00Z", "AQI": 91, "Value": 31.0}, {**base, "Parameter": "OZONE"}, {**base, "Latitude": 95}],
+        now,
+    )
     assert len(records) == 1
     assert records[0]["id"] == "airnow:53-033-001"
     assert records[0]["aqi"] == 91
@@ -31,19 +55,33 @@ def test_airnow_filters_pm25_deduplicates_and_namespaces_ids() -> None:
 
 
 def test_airnow_uses_explicit_country_and_leaves_unknown_unclassified() -> None:
-    now = datetime(2026, 8, 13, 18, tzinfo=timezone.utc)
-    base = {"Parameter": "PM2.5", "Latitude": 49.28, "Longitude": -123.12, "AQI": 40, "Value": 9.5, "Unit": "UG/M3", "UTC": "2026-08-13T17:00:00Z", "SiteName": "Site"}
-    records = parse_airnow([
-        {**base, "FullAQSCode": "CA-ONE", "CountryCode": "CA"},
-        {**base, "FullAQSCode": "MX-ONE", "CountryCode": "MEX", "Latitude": 19.4, "Longitude": -99.1},
-        {**base, "FullAQSCode": "UNKNOWN", "Latitude": 48.0},
-    ], now)
+    now = datetime(2026, 8, 13, 18, tzinfo=UTC)
+    base = {
+        "Parameter": "PM2.5",
+        "Latitude": 49.28,
+        "Longitude": -123.12,
+        "AQI": 40,
+        "Value": 9.5,
+        "Unit": "UG/M3",
+        "UTC": "2026-08-13T17:00:00Z",
+        "SiteName": "Site",
+    }
+    records = parse_airnow(
+        [
+            {**base, "FullAQSCode": "CA-ONE", "CountryCode": "CA"},
+            {**base, "FullAQSCode": "MX-ONE", "CountryCode": "MEX", "Latitude": 19.4, "Longitude": -99.1},
+            {**base, "FullAQSCode": "UNKNOWN", "Latitude": 48.0},
+        ],
+        now,
+    )
     assert records[0]["country"] == "CA"
     assert records[1]["country"] == "MX"
     assert "country" not in records[2]
 
 
-def _aqhi_feature(identifier: str = "JAGPB", *, value: float = 4.4, observed: str = "2026-08-19T17:00:00Z", latest: bool = True, kind: str = "original") -> dict:
+def _aqhi_feature(
+    identifier: str = "JAGPB", *, value: float = 4.4, observed: str = "2026-08-19T17:00:00Z", latest: bool = True, kind: str = "original"
+) -> dict:
     return {
         "type": "Feature",
         "geometry": {"type": "Point", "coordinates": [-120.846667, 56.2525]},
@@ -71,27 +109,42 @@ def _aqhi_payload(features: list[dict], *, matched: int | None = None, next_link
 
 
 def test_aqhi_parses_current_observations_and_public_scale() -> None:
-    now = datetime(2026, 8, 19, 18, tzinfo=timezone.utc)
+    now = datetime(2026, 8, 19, 18, tzinfo=UTC)
     monitors = parse_aqhi(_aqhi_payload([_aqhi_feature(value=4.4)]), now)
-    assert monitors == [{
-        "id": "aqhi:JAGPB", "name": "Fort St. John", "agency": "Environment and Climate Change Canada",
-        "lat": 56.2525, "lon": -120.846667, "observedAt": "2026-08-19T17:00:00Z",
-        "indexSystem": "ca-aqhi", "indexValue": 4.4, "indexMethod": "provider", "category": "Moderate",
-        "country": "CA", "source": "aqhi", "sourceUrl": "https://api.weather.gc.ca/collections/aqhi-observations-realtime",
-        "preliminary": True,
-    }]
+    assert monitors == [
+        {
+            "id": "aqhi:JAGPB",
+            "name": "Fort St. John",
+            "agency": "Environment and Climate Change Canada",
+            "lat": 56.2525,
+            "lon": -120.846667,
+            "observedAt": "2026-08-19T17:00:00Z",
+            "indexSystem": "ca-aqhi",
+            "indexValue": 4.4,
+            "indexMethod": "provider",
+            "category": "Moderate",
+            "country": "CA",
+            "source": "aqhi",
+            "sourceUrl": "https://api.weather.gc.ca/collections/aqhi-observations-realtime",
+            "preliminary": True,
+        }
+    ]
     assert aqhi_display_value(0.2) == 1
     assert aqhi_display_value(9.6) == 10
     assert aqhi_display_value(10.01) == "10+"
     assert [aqhi_category(value) for value in (1, 4, 7, 10.01)] == ["Low", "Moderate", "High", "Very high"]
-    assert [
-        (aqhi_display_value(value), aqhi_category(value))
-        for value in (3.49, 3.5, 6.49, 6.5, 10.0, 10.01)
-    ] == [(3, "Low"), (4, "Moderate"), (6, "Moderate"), (7, "High"), (10, "High"), ("10+", "Very high")]
+    assert [(aqhi_display_value(value), aqhi_category(value)) for value in (3.49, 3.5, 6.49, 6.5, 10.0, 10.01)] == [
+        (3, "Low"),
+        (4, "Moderate"),
+        (6, "Moderate"),
+        (7, "High"),
+        (10, "High"),
+        ("10+", "Very high"),
+    ]
 
 
 def test_aqhi_filters_invalid_and_stale_features_and_prefers_amendments() -> None:
-    now = datetime(2026, 8, 19, 18, tzinfo=timezone.utc)
+    now = datetime(2026, 8, 19, 18, tzinfo=UTC)
     original = _aqhi_feature(value=2.0)
     amendment = _aqhi_feature(value=7.2, kind="amendment")
     invalid = [
@@ -111,7 +164,7 @@ def test_aqhi_filters_invalid_and_stale_features_and_prefers_amendments() -> Non
 
 
 def test_aqhi_rejects_truncated_response() -> None:
-    now = datetime(2026, 8, 19, 18, tzinfo=timezone.utc)
+    now = datetime(2026, 8, 19, 18, tzinfo=UTC)
     for payload in (_aqhi_payload([_aqhi_feature()], matched=2), _aqhi_payload([_aqhi_feature()], next_link=True)):
         try:
             parse_aqhi(payload, now)
@@ -122,7 +175,7 @@ def test_aqhi_rejects_truncated_response() -> None:
 
 
 def test_aqhi_rejects_malformed_response_metadata() -> None:
-    now = datetime(2026, 8, 19, 18, tzinfo=timezone.utc)
+    now = datetime(2026, 8, 19, 18, tzinfo=UTC)
     for payload in (
         {**_aqhi_payload([_aqhi_feature()]), "links": {}},
         {**_aqhi_payload([_aqhi_feature()]), "numberMatched": True},
@@ -137,11 +190,11 @@ def test_aqhi_rejects_malformed_response_metadata() -> None:
 
 
 def test_aqhi_fetch_is_bounded_and_rejects_collapse() -> None:
-    now = datetime(2026, 8, 19, 18, tzinfo=timezone.utc)
+    now = datetime(2026, 8, 19, 18, tzinfo=UTC)
     body = json.dumps(_aqhi_payload([_aqhi_feature()])).encode()
     calls = []
 
-    def fake_fetch(url, **kwargs):
+    def fake_fetch(url: Any, **kwargs: Any) -> Any:
         calls.append((url, kwargs))
         return body
 
@@ -170,19 +223,37 @@ def test_aqhi_host_allowlist_fails_closed() -> None:
 
 
 def test_airnow_rejects_negative_concentration() -> None:
-    now = datetime(2026, 8, 13, 18, tzinfo=timezone.utc)
-    records = parse_airnow([{
-        "Parameter": "PM2.5", "Latitude": 47.6, "Longitude": -122.3, "AQI": 40, "Value": -1.2,
-        "Unit": "UG/M3", "UTC": "2026-08-13T17:00:00Z", "FullAQSCode": "53-NEG", "SiteName": "Bad",
-    }], now)
+    now = datetime(2026, 8, 13, 18, tzinfo=UTC)
+    records = parse_airnow(
+        [
+            {
+                "Parameter": "PM2.5",
+                "Latitude": 47.6,
+                "Longitude": -122.3,
+                "AQI": 40,
+                "Value": -1.2,
+                "Unit": "UG/M3",
+                "UTC": "2026-08-13T17:00:00Z",
+                "FullAQSCode": "53-NEG",
+                "SiteName": "Bad",
+            }
+        ],
+        now,
+    )
     assert records == []
 
 
 def test_airnow_rejects_non_finite_values_and_accepts_canonical_units() -> None:
-    now = datetime(2026, 8, 13, 18, tzinfo=timezone.utc)
+    now = datetime(2026, 8, 13, 18, tzinfo=UTC)
     base = {
-        "Parameter": "PM2.5", "Latitude": 47.6, "Longitude": -122.3, "AQI": 40,
-        "Value": 9.5, "UTC": "2026-08-13T17:00:00Z", "FullAQSCode": "53-UNIT", "SiteName": "Seattle",
+        "Parameter": "PM2.5",
+        "Latitude": 47.6,
+        "Longitude": -122.3,
+        "AQI": 40,
+        "Value": 9.5,
+        "UTC": "2026-08-13T17:00:00Z",
+        "FullAQSCode": "53-UNIT",
+        "SiteName": "Seattle",
     }
     for unit in (None, "µg/m³", "μg/m³", "UG/M3"):
         record = dict(base)
@@ -194,42 +265,90 @@ def test_airnow_rejects_non_finite_values_and_accepts_canonical_units() -> None:
 
 
 def test_airnow_keeps_alaska_and_aleutian_sites() -> None:
-    now = datetime(2026, 8, 13, 18, tzinfo=timezone.utc)
-    records = parse_airnow([
-        {"Parameter": "PM25", "Latitude": 64.5, "Longitude": -165.4, "AQI": 40, "Value": 9.5, "Unit": "UG/M3", "UTC": "2026-08-13T17:00:00Z", "FullAQSCode": "02-NOME", "SiteName": "Nome"},
-        {"Parameter": "PM25", "Latitude": 52.8, "Longitude": 173.2, "AQI": 32, "Value": 7.6, "Unit": "UG/M3", "UTC": "2026-08-13T17:00:00Z", "FullAQSCode": "02-ATTU", "SiteName": "Attu"},
-        {"Parameter": "PM25", "Latitude": 64.5, "Longitude": -165.4, "AQI": 40, "Value": 9.5, "Unit": "UG/M3", "UTC": "2026-08-13T19:00:00Z", "FullAQSCode": "02-FUTURE", "SiteName": "Future"},
-    ], now)
+    now = datetime(2026, 8, 13, 18, tzinfo=UTC)
+    records = parse_airnow(
+        [
+            {
+                "Parameter": "PM25",
+                "Latitude": 64.5,
+                "Longitude": -165.4,
+                "AQI": 40,
+                "Value": 9.5,
+                "Unit": "UG/M3",
+                "UTC": "2026-08-13T17:00:00Z",
+                "FullAQSCode": "02-NOME",
+                "SiteName": "Nome",
+            },
+            {
+                "Parameter": "PM25",
+                "Latitude": 52.8,
+                "Longitude": 173.2,
+                "AQI": 32,
+                "Value": 7.6,
+                "Unit": "UG/M3",
+                "UTC": "2026-08-13T17:00:00Z",
+                "FullAQSCode": "02-ATTU",
+                "SiteName": "Attu",
+            },
+            {
+                "Parameter": "PM25",
+                "Latitude": 64.5,
+                "Longitude": -165.4,
+                "AQI": 40,
+                "Value": 9.5,
+                "Unit": "UG/M3",
+                "UTC": "2026-08-13T19:00:00Z",
+                "FullAQSCode": "02-FUTURE",
+                "SiteName": "Future",
+            },
+        ],
+        now,
+    )
     assert {item["id"] for item in records} == {"airnow:02-NOME", "airnow:02-ATTU"}
 
 
 def test_airnow_dedupes_six_hour_window_to_newest() -> None:
-    now = datetime(2026, 8, 13, 18, tzinfo=timezone.utc)
-    base = {"Parameter": "PM2.5", "Latitude": 47.6, "Longitude": -122.3, "Value": 20.0, "Unit": "UG/M3", "FullAQSCode": "53-033-001", "SiteName": "Seattle"}
-    records = parse_airnow([
-        {**base, "UTC": "2026-08-13T12:00:00Z", "AQI": 40},
-        {**base, "UTC": "2026-08-13T15:00:00Z", "AQI": 55},
-        {**base, "UTC": "2026-08-13T18:00:00Z", "AQI": 70, "Value": 22.0},
-        {**base, "UTC": "2026-08-13T11:00:00Z", "AQI": 30, "FullAQSCode": "53-OTHER", "SiteName": "Other"},
-    ], now)
+    now = datetime(2026, 8, 13, 18, tzinfo=UTC)
+    base = {
+        "Parameter": "PM2.5",
+        "Latitude": 47.6,
+        "Longitude": -122.3,
+        "Value": 20.0,
+        "Unit": "UG/M3",
+        "FullAQSCode": "53-033-001",
+        "SiteName": "Seattle",
+    }
+    records = parse_airnow(
+        [
+            {**base, "UTC": "2026-08-13T12:00:00Z", "AQI": 40},
+            {**base, "UTC": "2026-08-13T15:00:00Z", "AQI": 55},
+            {**base, "UTC": "2026-08-13T18:00:00Z", "AQI": 70, "Value": 22.0},
+            {**base, "UTC": "2026-08-13T11:00:00Z", "AQI": 30, "FullAQSCode": "53-OTHER", "SiteName": "Other"},
+        ],
+        now,
+    )
     assert [item["id"] for item in records] == ["airnow:53-033-001", "airnow:53-OTHER"]
     assert records[0]["aqi"] == 70
     assert records[0]["observedAt"] == "2026-08-13T18:00:00Z"
 
 
-def test_airnow_fetch_tiles_and_rejects_collapse(monkeypatch) -> None:
+def test_airnow_fetch_tiles_and_rejects_collapse(monkeypatch: Any) -> None:
     tiles: list[str] = []
     params_seen: list[dict] = []
     retries_seen: list[int] = []
 
-    def fake_fetch(url, **kwargs):
+    def fake_fetch(url: Any, **kwargs: Any) -> Any:
         params_seen.append(kwargs["params"])
         retries_seen.append(kwargs["retries"])
         tiles.append(kwargs["params"]["BBOX"])
-        return b'[{"Parameter":"PM2.5","Latitude":47.6,"Longitude":-122.3,"AQI":40,"Value":9.8,"Unit":"UG/M3","UTC":"2026-08-13T17:00:00Z","FullAQSCode":"A","SiteName":"Seattle"}]'
+        return (
+            b'[{"Parameter":"PM2.5","Latitude":47.6,"Longitude":-122.3,"AQI":40,'
+            b'"Value":9.8,"Unit":"UG/M3","UTC":"2026-08-13T17:00:00Z",'
+            b'"FullAQSCode":"A","SiteName":"Seattle"}]'
+        )
 
     settings = type("S", (), {"airnow_api_key": "secret", "airnow_base_url": "https://www.airnowapi.org/aq/data/"})()
-    now = datetime(2026, 8, 13, 18, tzinfo=timezone.utc)
+    now = datetime(2026, 8, 13, 18, tzinfo=UTC)
     with patch("ingest.sources.airnow.fetch", fake_fetch):
         monitors = fetch_airnow(settings, now)
     assert set(tiles) == {
@@ -257,13 +376,13 @@ def test_airnow_fetch_tiles_and_rejects_collapse(monkeypatch) -> None:
 
 
 def test_airnow_tile_failure_is_atomic() -> None:
-    def fake_fetch(url, **kwargs):
+    def fake_fetch(url: Any, **kwargs: Any) -> Any:
         if kwargs["params"]["BBOX"].startswith("170"):
             raise RuntimeError("timeout")
         return b"[]"
 
     settings = type("S", (), {"airnow_api_key": "secret", "airnow_base_url": "https://www.airnowapi.org/aq/data/"})()
-    now = datetime(2026, 8, 13, 18, tzinfo=timezone.utc)
+    now = datetime(2026, 8, 13, 18, tzinfo=UTC)
     with patch("ingest.sources.airnow.fetch", fake_fetch):
         try:
             fetch_airnow(settings, now)
@@ -275,11 +394,13 @@ def test_airnow_tile_failure_is_atomic() -> None:
 
 def test_bc_parses_pst_and_nowcast() -> None:
     stations = parse_bc_stations("EMS_ID,STATION_NAME,STATION_OWNER,LATITUDE,LONGITUDE\nE1,Kamloops,ENV,50.67,-120.34\n")
-    hourly = "\n".join([
-        "DATE_PST,EMS_ID,STATION_NAME,PARAMETER,RAW_VALUE,UNITS,LATITUDE,LONGITUDE",
-        *[f"2026-08-13 {hour:02d}:00,E1,Kamloops,PM25,12.0,ug/m3,50.67,-120.34" for hour in range(7, 19)],
-    ])
-    now = datetime(2026, 8, 14, 3, tzinfo=timezone.utc)
+    hourly = "\n".join(
+        [
+            "DATE_PST,EMS_ID,STATION_NAME,PARAMETER,RAW_VALUE,UNITS,LATITUDE,LONGITUDE",
+            *[f"2026-08-13 {hour:02d}:00,E1,Kamloops,PM25,12.0,ug/m3,50.67,-120.34" for hour in range(7, 19)],
+        ]
+    )
+    now = datetime(2026, 8, 14, 3, tzinfo=UTC)
     monitors = parse_bc_hourly(hourly, stations, now)
     assert len(monitors) == 1
     assert monitors[0]["id"] == "bcair:E1"
@@ -290,12 +411,14 @@ def test_bc_parses_pst_and_nowcast() -> None:
 
 def test_bc_accepts_canonical_microgram_units() -> None:
     stations = parse_bc_stations("EMS_ID,STATION_NAME,STATION_OWNER,LATITUDE,LONGITUDE\nE1,Kamloops,ENV,50.67,-120.34\n")
-    now = datetime(2026, 8, 14, 3, tzinfo=timezone.utc)
+    now = datetime(2026, 8, 14, 3, tzinfo=UTC)
     for unit in ("µg/m³", "μg/m³", "UG/M3"):
-        hourly = "\n".join([
-            "DATE_PST,EMS_ID,STATION_NAME,PARAMETER,RAW_VALUE,UNITS,LATITUDE,LONGITUDE",
-            *[f"2026-08-13 {hour:02d}:00,E1,Kamloops,PM25,12.0,{unit},50.67,-120.34" for hour in range(17, 19)],
-        ])
+        hourly = "\n".join(
+            [
+                "DATE_PST,EMS_ID,STATION_NAME,PARAMETER,RAW_VALUE,UNITS,LATITUDE,LONGITUDE",
+                *[f"2026-08-13 {hour:02d}:00,E1,Kamloops,PM25,12.0,{unit},50.67,-120.34" for hour in range(17, 19)],
+            ]
+        )
         assert len(parse_bc_hourly(hourly, stations, now)) == 1
 
 
@@ -303,7 +426,7 @@ def test_bc_ignores_hours_older_than_nowcast_window() -> None:
     stations = parse_bc_stations("EMS_ID,STATION_NAME,STATION_OWNER,LATITUDE,LONGITUDE\nE1,Kamloops,ENV,50.67,-120.34\n")
     header = "DATE_PST,EMS_ID,STATION_NAME,PARAMETER,RAW_VALUE,UNITS,LATITUDE,LONGITUDE"
     recent = [f"2026-08-13 {hour:02d}:00,E1,Kamloops,PM25,12.0,ug/m3,50.67,-120.34" for hour in range(7, 19)]
-    now = datetime(2026, 8, 14, 3, tzinfo=timezone.utc)
+    now = datetime(2026, 8, 14, 3, tzinfo=UTC)
     baseline = parse_bc_hourly("\n".join([header, *recent]), stations, now)
     spiked = parse_bc_hourly("\n".join([header, "2026-08-12 12:00,E1,Kamloops,PM25,80.0,ug/m3,50.67,-120.34", *recent]), stations, now)
     assert len(spiked) == 1
@@ -317,7 +440,7 @@ def test_bc_keeps_oldest_nowcast_clock_hour() -> None:
     stations = parse_bc_stations("EMS_ID,STATION_NAME,STATION_OWNER,LATITUDE,LONGITUDE\nE1,Kamloops,ENV,50.67,-120.34\n")
     header = "DATE_PST,EMS_ID,STATION_NAME,PARAMETER,RAW_VALUE,UNITS,LATITUDE,LONGITUDE"
     newer = [f"2026-08-13 {hour:02d}:00,E1,Kamloops,PM25,10.0,ug/m3,50.67,-120.34" for hour in range(9, 19)]
-    now = datetime(2026, 8, 14, 3, tzinfo=timezone.utc)
+    now = datetime(2026, 8, 14, 3, tzinfo=UTC)
     without_edge = parse_bc_hourly("\n".join([header, *newer]), stations, now)
     with_edge = parse_bc_hourly("\n".join([header, "2026-08-13 08:00,E1,Kamloops,PM25,500.0,ug/m3,50.67,-120.34", *newer]), stations, now)
     assert with_edge[0]["nowcastConcentration"] != without_edge[0]["nowcastConcentration"]
@@ -328,10 +451,14 @@ def test_bc_drops_hour_just_before_keep_window() -> None:
     stations = parse_bc_stations("EMS_ID,STATION_NAME,STATION_OWNER,LATITUDE,LONGITUDE\nE1,Kamloops,ENV,50.67,-120.34\n")
     header = "DATE_PST,EMS_ID,STATION_NAME,PARAMETER,RAW_VALUE,UNITS,LATITUDE,LONGITUDE"
     in_window = [f"2026-08-13 {hour:02d}:00,E1,Kamloops,PM25,10.0,ug/m3,50.67,-120.34" for hour in range(8, 19)]
-    now = datetime(2026, 8, 14, 3, tzinfo=timezone.utc)
+    now = datetime(2026, 8, 14, 3, tzinfo=UTC)
     baseline = parse_bc_hourly("\n".join([header, *in_window]), stations, now)
-    before_window = parse_bc_hourly("\n".join([header, "2026-08-13 06:00,E1,Kamloops,PM25,80.0,ug/m3,50.67,-120.34", *in_window]), stations, now)
-    at_oldest = parse_bc_hourly("\n".join([header, "2026-08-13 07:00,E1,Kamloops,PM25,80.0,ug/m3,50.67,-120.34", *in_window]), stations, now)
+    before_window = parse_bc_hourly(
+        "\n".join([header, "2026-08-13 06:00,E1,Kamloops,PM25,80.0,ug/m3,50.67,-120.34", *in_window]), stations, now
+    )
+    at_oldest = parse_bc_hourly(
+        "\n".join([header, "2026-08-13 07:00,E1,Kamloops,PM25,80.0,ug/m3,50.67,-120.34", *in_window]), stations, now
+    )
     assert before_window[0]["nowcastConcentration"] == baseline[0]["nowcastConcentration"]
     assert at_oldest[0]["nowcastConcentration"] == baseline[0]["nowcastConcentration"]
     assert before_window[0]["concentration"] == 10.0
@@ -341,7 +468,7 @@ def test_bc_window_uses_truncated_clock_hour() -> None:
     stations = parse_bc_stations("EMS_ID,STATION_NAME,STATION_OWNER,LATITUDE,LONGITUDE\nE1,Kamloops,ENV,50.67,-120.34\n")
     header = "DATE_PST,EMS_ID,STATION_NAME,PARAMETER,RAW_VALUE,UNITS,LATITUDE,LONGITUDE"
     newer = [f"2026-08-13 {hour:02d}:00,E1,Kamloops,PM25,10.0,ug/m3,50.67,-120.34" for hour in range(9, 19)]
-    now = datetime(2026, 8, 14, 3, 45, tzinfo=timezone.utc)
+    now = datetime(2026, 8, 14, 3, 45, tzinfo=UTC)
     without_edge = parse_bc_hourly("\n".join([header, *newer]), stations, now)
     with_edge = parse_bc_hourly("\n".join([header, "2026-08-13 08:00,E1,Kamloops,PM25,500.0,ug/m3,50.67,-120.34", *newer]), stations, now)
     assert with_edge[0]["nowcastConcentration"] != without_edge[0]["nowcastConcentration"]
@@ -354,7 +481,7 @@ def test_bc_rejects_observations_beyond_future_grace() -> None:
         "2026-08-13 17:00,E1,Kamloops,PM25,10.0,ug/m3,50.67,-120.34",
         "2026-08-13 18:00,E1,Kamloops,PM25,11.0,ug/m3,50.67,-120.34",
     ]
-    now = datetime(2026, 8, 14, 3, 10, tzinfo=timezone.utc)
+    now = datetime(2026, 8, 14, 3, 10, tzinfo=UTC)
     kept = parse_bc_hourly("\n".join([header, *recent, "2026-08-13 19:25,E1,Kamloops,PM25,22.0,ug/m3,50.67,-120.34"]), stations, now)
     too_new = parse_bc_hourly("\n".join([header, *recent, "2026-08-13 19:26,E1,Kamloops,PM25,99.0,ug/m3,50.67,-120.34"]), stations, now)
     assert kept[0]["concentration"] == 22.0
@@ -365,40 +492,46 @@ def test_bc_rejects_observations_beyond_future_grace() -> None:
 
 def test_bc_omits_stations_with_only_pre_window_hours() -> None:
     stations = parse_bc_stations(
-        "EMS_ID,STATION_NAME,STATION_OWNER,LATITUDE,LONGITUDE\n"
-        "E1,Kamloops,ENV,50.67,-120.34\n"
-        "E2,Prince George,ENV,53.91,-122.75\n"
+        "EMS_ID,STATION_NAME,STATION_OWNER,LATITUDE,LONGITUDE\nE1,Kamloops,ENV,50.67,-120.34\nE2,Prince George,ENV,53.91,-122.75\n"
     )
-    hourly = "\n".join([
-        "DATE_PST,EMS_ID,STATION_NAME,PARAMETER,RAW_VALUE,UNITS,LATITUDE,LONGITUDE",
-        *[f"2026-08-13 {hour:02d}:00,E1,Kamloops,PM25,12.0,ug/m3,50.67,-120.34" for hour in range(7, 19)],
-        *[f"2026-08-01 {hour:02d}:00,E2,Prince George,PM25,80.0,ug/m3,53.91,-122.75" for hour in range(0, 24)],
-        "2026-08-13 06:59:59,E2,Prince George,PM25,80.0,ug/m3,53.91,-122.75",
-    ])
-    monitors = parse_bc_hourly(hourly, stations, datetime(2026, 8, 14, 3, tzinfo=timezone.utc))
+    hourly = "\n".join(
+        [
+            "DATE_PST,EMS_ID,STATION_NAME,PARAMETER,RAW_VALUE,UNITS,LATITUDE,LONGITUDE",
+            *[f"2026-08-13 {hour:02d}:00,E1,Kamloops,PM25,12.0,ug/m3,50.67,-120.34" for hour in range(7, 19)],
+            *[f"2026-08-01 {hour:02d}:00,E2,Prince George,PM25,80.0,ug/m3,53.91,-122.75" for hour in range(0, 24)],
+            "2026-08-13 06:59:59,E2,Prince George,PM25,80.0,ug/m3,53.91,-122.75",
+        ]
+    )
+    monitors = parse_bc_hourly(hourly, stations, datetime(2026, 8, 14, 3, tzinfo=UTC))
     assert [item["id"] for item in monitors] == ["bcair:E1"]
 
 
 def test_bc_stale_rolling_history_publishes_nothing() -> None:
     stations = parse_bc_stations("EMS_ID,STATION_NAME,STATION_OWNER,LATITUDE,LONGITUDE\nE1,Kamloops,ENV,50.67,-120.34\n")
-    hourly = "\n".join([
-        "DATE_PST,EMS_ID,STATION_NAME,PARAMETER,RAW_VALUE,UNITS,LATITUDE,LONGITUDE",
-        *[f"2026-08-01 {hour:02d}:00,E1,Kamloops,PM25,80.0,ug/m3,50.67,-120.34" for hour in range(0, 24)],
-    ])
-    now = datetime(2026, 8, 14, 3, tzinfo=timezone.utc)
+    hourly = "\n".join(
+        [
+            "DATE_PST,EMS_ID,STATION_NAME,PARAMETER,RAW_VALUE,UNITS,LATITUDE,LONGITUDE",
+            *[f"2026-08-01 {hour:02d}:00,E1,Kamloops,PM25,80.0,ug/m3,50.67,-120.34" for hour in range(0, 24)],
+        ]
+    )
+    now = datetime(2026, 8, 14, 3, tzinfo=UTC)
     assert parse_bc_hourly(hourly, stations, now) == []
     assert parse_bc_hourly("", stations, now) == []
     assert parse_bc_hourly("DATE_PST,EMS_ID,PARAMETER,RAW_VALUE,UNITS,LATITUDE,LONGITUDE\n", stations, now) == []
 
-    def fake_fetch(url, **kwargs):
+    def fake_fetch(url: Any, **kwargs: Any) -> Any:
         if url.endswith("PM25.csv"):
             return hourly.encode()
         return b"EMS_ID,STATION_NAME,STATION_OWNER,LATITUDE,LONGITUDE\nE1,Kamloops,ENV,50.67,-120.34\n"
 
-    settings = type("S", (), {
-        "bc_hourly_url": "https://www.env.gov.bc.ca/epd/bcairquality/aqo/csv/Hourly_Raw_Air_Data/Air_Quality/PM25.csv",
-        "bc_stations_url": "https://www.env.gov.bc.ca/epd/bcairquality/aqo/csv/bc_air_monitoring_stations.csv",
-    })()
+    settings = type(
+        "S",
+        (),
+        {
+            "bc_hourly_url": "https://www.env.gov.bc.ca/epd/bcairquality/aqo/csv/Hourly_Raw_Air_Data/Air_Quality/PM25.csv",
+            "bc_stations_url": "https://www.env.gov.bc.ca/epd/bcairquality/aqo/csv/bc_air_monitoring_stations.csv",
+        },
+    )()
     try:
         with patch("ingest.sources.bc_air.fetch", fake_fetch):
             fetch_bc_air(settings, now)
@@ -411,7 +544,7 @@ def test_bc_stale_rolling_history_publishes_nothing() -> None:
 def test_bc_hourly_budget_accepts_current_rolling_file() -> None:
     seen: dict[str, int] = {}
 
-    def fake_fetch(url, **kwargs):
+    def fake_fetch(url: Any, **kwargs: Any) -> Any:
         seen[url] = kwargs["max_bytes"]
         if url.endswith("PM25.csv"):
             rows = [
@@ -421,12 +554,16 @@ def test_bc_hourly_budget_accepts_current_rolling_file() -> None:
             return "\n".join(rows).encode()
         return b"EMS_ID,STATION_NAME,STATION_OWNER,LATITUDE,LONGITUDE\nE1,Kamloops,ENV,50.67,-120.34\n"
 
-    settings = type("S", (), {
-        "bc_hourly_url": "https://www.env.gov.bc.ca/epd/bcairquality/aqo/csv/Hourly_Raw_Air_Data/Air_Quality/PM25.csv",
-        "bc_stations_url": "https://www.env.gov.bc.ca/epd/bcairquality/aqo/csv/bc_air_monitoring_stations.csv",
-    })()
+    settings = type(
+        "S",
+        (),
+        {
+            "bc_hourly_url": "https://www.env.gov.bc.ca/epd/bcairquality/aqo/csv/Hourly_Raw_Air_Data/Air_Quality/PM25.csv",
+            "bc_stations_url": "https://www.env.gov.bc.ca/epd/bcairquality/aqo/csv/bc_air_monitoring_stations.csv",
+        },
+    )()
     with patch("ingest.sources.bc_air.fetch", fake_fetch):
-        monitors = fetch_bc_air(settings, datetime(2026, 8, 14, 3, tzinfo=timezone.utc))
+        monitors = fetch_bc_air(settings, datetime(2026, 8, 14, 3, tzinfo=UTC))
     assert monitors[0]["id"] == "bcair:E1"
     assert seen[settings.bc_hourly_url] == HOURLY_MAX_BYTES
     assert seen[settings.bc_stations_url] == STATIONS_MAX_BYTES
@@ -436,16 +573,20 @@ def test_bc_hourly_budget_accepts_current_rolling_file() -> None:
 
 
 def test_bc_hourly_oversize_is_not_published() -> None:
-    def fake_fetch(url, **kwargs):
+    def fake_fetch(url: Any, **kwargs: Any) -> None:
         raise RuntimeError(f"response exceeds {kwargs['max_bytes']} bytes")
 
-    settings = type("S", (), {
-        "bc_hourly_url": "https://www.env.gov.bc.ca/epd/bcairquality/aqo/csv/Hourly_Raw_Air_Data/Air_Quality/PM25.csv",
-        "bc_stations_url": "https://www.env.gov.bc.ca/epd/bcairquality/aqo/csv/bc_air_monitoring_stations.csv",
-    })()
+    settings = type(
+        "S",
+        (),
+        {
+            "bc_hourly_url": "https://www.env.gov.bc.ca/epd/bcairquality/aqo/csv/Hourly_Raw_Air_Data/Air_Quality/PM25.csv",
+            "bc_stations_url": "https://www.env.gov.bc.ca/epd/bcairquality/aqo/csv/bc_air_monitoring_stations.csv",
+        },
+    )()
     try:
         with patch("ingest.sources.bc_air.fetch", fake_fetch):
-            fetch_bc_air(settings, datetime(2026, 8, 14, 3, tzinfo=timezone.utc))
+            fetch_bc_air(settings, datetime(2026, 8, 14, 3, tzinfo=UTC))
     except RuntimeError as exc:
         assert "exceeds" in str(exc)
         assert str(HOURLY_MAX_BYTES) in str(exc)
@@ -461,21 +602,23 @@ def test_bc_window_filter_does_not_collapse_current_stations() -> None:
         lat = 50.67 + index * 0.01
         station_rows.append(f"{identifier},S{index},ENV,{lat},-120.34")
         hourly_rows.append(f"2026-08-01 12:00,{identifier},S{index},PM25,80.0,ug/m3,{lat},-120.34")
-        hourly_rows.extend(
-            f"2026-08-13 {hour:02d}:00,{identifier},S{index},PM25,12.0,ug/m3,{lat},-120.34" for hour in range(7, 19)
-        )
+        hourly_rows.extend(f"2026-08-13 {hour:02d}:00,{identifier},S{index},PM25,12.0,ug/m3,{lat},-120.34" for hour in range(7, 19))
 
-    def fake_fetch(url, **kwargs):
+    def fake_fetch(url: Any, **kwargs: Any) -> Any:
         if url.endswith("PM25.csv"):
             return "\n".join(hourly_rows).encode()
         return "\n".join(station_rows).encode()
 
-    settings = type("S", (), {
-        "bc_hourly_url": "https://www.env.gov.bc.ca/epd/bcairquality/aqo/csv/Hourly_Raw_Air_Data/Air_Quality/PM25.csv",
-        "bc_stations_url": "https://www.env.gov.bc.ca/epd/bcairquality/aqo/csv/bc_air_monitoring_stations.csv",
-    })()
+    settings = type(
+        "S",
+        (),
+        {
+            "bc_hourly_url": "https://www.env.gov.bc.ca/epd/bcairquality/aqo/csv/Hourly_Raw_Air_Data/Air_Quality/PM25.csv",
+            "bc_stations_url": "https://www.env.gov.bc.ca/epd/bcairquality/aqo/csv/bc_air_monitoring_stations.csv",
+        },
+    )()
     with patch("ingest.sources.bc_air.fetch", fake_fetch):
-        monitors = fetch_bc_air(settings, datetime(2026, 8, 14, 3, tzinfo=timezone.utc), previous_count=10)
+        monitors = fetch_bc_air(settings, datetime(2026, 8, 14, 3, tzinfo=UTC), previous_count=10)
     assert len(monitors) == 10
 
 
@@ -488,22 +631,24 @@ def test_bc_collapse_when_few_stations_remain_in_window() -> None:
         station_rows.append(f"{identifier},S{index},ENV,{lat},-120.34")
         hours = range(7, 19) if index < 3 else range(0, 12)
         day = "2026-08-13" if index < 3 else "2026-08-01"
-        hourly_rows.extend(
-            f"{day} {hour:02d}:00,{identifier},S{index},PM25,12.0,ug/m3,{lat},-120.34" for hour in hours
-        )
+        hourly_rows.extend(f"{day} {hour:02d}:00,{identifier},S{index},PM25,12.0,ug/m3,{lat},-120.34" for hour in hours)
 
-    def fake_fetch(url, **kwargs):
+    def fake_fetch(url: Any, **kwargs: Any) -> Any:
         if url.endswith("PM25.csv"):
             return "\n".join(hourly_rows).encode()
         return "\n".join(station_rows).encode()
 
-    settings = type("S", (), {
-        "bc_hourly_url": "https://www.env.gov.bc.ca/epd/bcairquality/aqo/csv/Hourly_Raw_Air_Data/Air_Quality/PM25.csv",
-        "bc_stations_url": "https://www.env.gov.bc.ca/epd/bcairquality/aqo/csv/bc_air_monitoring_stations.csv",
-    })()
+    settings = type(
+        "S",
+        (),
+        {
+            "bc_hourly_url": "https://www.env.gov.bc.ca/epd/bcairquality/aqo/csv/Hourly_Raw_Air_Data/Air_Quality/PM25.csv",
+            "bc_stations_url": "https://www.env.gov.bc.ca/epd/bcairquality/aqo/csv/bc_air_monitoring_stations.csv",
+        },
+    )()
     try:
         with patch("ingest.sources.bc_air.fetch", fake_fetch):
-            fetch_bc_air(settings, datetime(2026, 8, 14, 3, tzinfo=timezone.utc), previous_count=10)
+            fetch_bc_air(settings, datetime(2026, 8, 14, 3, tzinfo=UTC), previous_count=10)
     except ValueError as exc:
         assert "collapsed" in str(exc)
     else:
@@ -511,14 +656,16 @@ def test_bc_collapse_when_few_stations_remain_in_window() -> None:
 
 
 def test_bc_rejects_malformed_and_non_pm_rows() -> None:
-    hourly = "\n".join([
-        "DATE_PST,EMS_ID,PARAMETER,RAW_VALUE,UNITS,LATITUDE,LONGITUDE",
-        "not-a-date,E1,PM25,12,ug/m3,50.67,-120.34",
-        "2026-08-13 12:00,E1,O3,12,ug/m3,50.67,-120.34",
-        "2026-08-13 12:00,E1,PM25,12,ppm,50.67,-120.34",
-        "2026-08-13 12:00,E1,PM25,12,ppb,50.67,-120.34",
-    ])
-    assert parse_bc_hourly(hourly, {}, datetime(2026, 8, 13, 21, tzinfo=timezone.utc)) == []
+    hourly = "\n".join(
+        [
+            "DATE_PST,EMS_ID,PARAMETER,RAW_VALUE,UNITS,LATITUDE,LONGITUDE",
+            "not-a-date,E1,PM25,12,ug/m3,50.67,-120.34",
+            "2026-08-13 12:00,E1,O3,12,ug/m3,50.67,-120.34",
+            "2026-08-13 12:00,E1,PM25,12,ppm,50.67,-120.34",
+            "2026-08-13 12:00,E1,PM25,12,ppb,50.67,-120.34",
+        ]
+    )
+    assert parse_bc_hourly(hourly, {}, datetime(2026, 8, 13, 21, tzinfo=UTC)) == []
 
 
 def test_regional_sources_ignore_negative_and_nonfinite_pm25() -> None:
@@ -526,19 +673,20 @@ def test_regional_sources_ignore_negative_and_nonfinite_pm25() -> None:
     header = "DATE_PST,EMS_ID,STATION_NAME,PARAMETER,RAW_VALUE,UNITS,LATITUDE,LONGITUDE"
     valid = [f"2026-08-13 {hour:02d}:00,E1,Kamloops,PM25,10.0,ug/m3,50.67,-120.34" for hour in range(7, 19)]
     invalid = [f"2026-08-13 19:00,E1,Kamloops,PM25,{value},ug/m3,50.67,-120.34" for value in ("-1", "NaN", "Infinity")]
-    now = datetime(2026, 8, 14, 3, tzinfo=timezone.utc)
+    now = datetime(2026, 8, 14, 3, tzinfo=UTC)
     monitor = parse_bc_hourly("\n".join([header, *valid, *invalid]), stations, now)[0]
     assert monitor["concentration"] == 10.0
     assert monitor["observedAt"] == "2026-08-14T02:00:00Z"
 
     zone = sinaica_timezone("Ciudad de Mexico", "Benito Juarez", 19.43, -99.13)
+    assert zone is not None
     payload = [
         *[{"fecha": "2026-08-13", "hora": hour, "valor": 10} for hour in range(9, 21)],
         *[{"fecha": "2026-08-13", "hora": 21, "valor": value} for value in ("-1", "NaN", "Infinity")],
     ]
     hours = parse_sinaica_hours(payload, zone, now)
     assert len(hours) == 12
-    assert max(hours) == datetime(2026, 8, 14, 2, tzinfo=timezone.utc)
+    assert max(hours) == datetime(2026, 8, 14, 2, tzinfo=UTC)
     assert all(value.is_finite() and value >= 0 for value in hours.values())
 
 
@@ -550,10 +698,11 @@ def test_sinaica_discovers_stations_and_rejects_unknown_timezone() -> None:
     )
     assert parse_sinaica_stations(html) == [("102", "Guadalajara")]
     zone = sinaica_timezone("Baja California", "Tijuana", 32.53, -117.02)
+    assert zone is not None
     hours = parse_sinaica_hours(
         [{"id": "1", "fecha": "2026-08-13", "hora": 12, "valor": 14}],
         zone,
-        datetime(2026, 8, 14, tzinfo=timezone.utc),
+        datetime(2026, 8, 14, tzinfo=UTC),
     )
     assert hours
     assert sinaica_timezone("Unknown", "Unknown", 5.0, -70.0) is None
@@ -578,11 +727,11 @@ def test_sinaica_station_discovery_fails_closed_without_authoritative_select() -
 def test_sinaica_extracts_embedded_json_without_executing_javascript() -> None:
     executed = {"eval": False, "exec": False}
 
-    def boom_eval(*_args, **_kwargs):
+    def boom_eval(*_args: Any, **_kwargs: Any) -> None:
         executed["eval"] = True
         raise AssertionError("eval executed")
 
-    def boom_exec(*_args, **_kwargs):
+    def boom_exec(*_args: Any, **_kwargs: Any) -> None:
         executed["exec"] = True
         raise AssertionError("exec executed")
 
@@ -616,37 +765,42 @@ def test_sinaica_dst_and_border_timezones() -> None:
     tijuana = sinaica_timezone("Baja California", "Tijuana", 32.53, -117.02)
     mexico_city = sinaica_timezone("Ciudad de Mexico", "Benito Juarez", 19.43, -99.13)
     juarez = sinaica_timezone("Chihuahua", "Ciudad Juarez", 31.74, -106.49)
-    now = datetime(2026, 8, 14, tzinfo=timezone.utc)
+    assert tijuana is not None and mexico_city is not None and juarez is not None
+    now = datetime(2026, 8, 14, tzinfo=UTC)
     summer = parse_sinaica_hours([{"id": "1", "fecha": "2026-08-13", "hora": 12, "valor": 14}], tijuana, now)
-    winter = parse_sinaica_hours([{"id": "1", "fecha": "2026-01-13", "hora": 12, "valor": 14}], tijuana, datetime(2026, 1, 14, tzinfo=timezone.utc))
+    winter = parse_sinaica_hours([{"id": "1", "fecha": "2026-01-13", "hora": 12, "valor": 14}], tijuana, datetime(2026, 1, 14, tzinfo=UTC))
     capital = parse_sinaica_hours([{"id": "1", "fecha": "2026-08-13", "hora": 12, "valor": 14}], mexico_city, now)
-    assert next(iter(summer)) == datetime(2026, 8, 13, 19, tzinfo=timezone.utc)
-    assert next(iter(winter)) == datetime(2026, 1, 13, 20, tzinfo=timezone.utc)
-    assert next(iter(capital)) == datetime(2026, 8, 13, 18, tzinfo=timezone.utc)
+    assert next(iter(summer)) == datetime(2026, 8, 13, 19, tzinfo=UTC)
+    assert next(iter(winter)) == datetime(2026, 1, 13, 20, tzinfo=UTC)
+    assert next(iter(capital)) == datetime(2026, 8, 13, 18, tzinfo=UTC)
     assert juarez.key == "America/Ciudad_Juarez"
 
 
 def test_sinaica_kill_switch_and_station_collapse() -> None:
     disabled = type("S", (), {"sinaica_enabled": False, "sinaica_base_url": "https://sinaica.inecc.gob.mx/"})()
     try:
-        fetch_sinaica(disabled, datetime(2026, 8, 13, 18, tzinfo=timezone.utc))
+        fetch_sinaica(disabled, datetime(2026, 8, 13, 18, tzinfo=UTC))
     except PermissionError as exc:
         assert "disabled" in str(exc)
     else:
         raise AssertionError("kill switch was ignored")
 
-    settings = type("S", (), {
-        "sinaica_enabled": True,
-        "sinaica_base_url": "https://sinaica.inecc.gob.mx/",
-        "sinaica_stations_url": "https://sinaica.inecc.gob.mx/data.php",
-        "sinaica_min_stations": 8,
-        "sinaica_concurrency": 2,
-        "sinaica_stale_rate": 0.85,
-    })()
+    settings = type(
+        "S",
+        (),
+        {
+            "sinaica_enabled": True,
+            "sinaica_base_url": "https://sinaica.inecc.gob.mx/",
+            "sinaica_stations_url": "https://sinaica.inecc.gob.mx/data.php",
+            "sinaica_min_stations": 8,
+            "sinaica_concurrency": 2,
+            "sinaica_stale_rate": 0.85,
+        },
+    )()
     html = b'<select id="estacion"><option value="102">Guadalajara</option></select>'
     with patch("ingest.sources.sinaica.fetch", return_value=html):
         try:
-            fetch_sinaica(settings, datetime(2026, 8, 13, 18, tzinfo=timezone.utc))
+            fetch_sinaica(settings, datetime(2026, 8, 13, 18, tzinfo=UTC))
         except ValueError as exc:
             assert "collapsed" in str(exc)
         else:
@@ -663,12 +817,23 @@ def test_sinaica_schema_drift_is_rejected() -> None:
 
 
 def test_sinaica_station_request_failure_is_skipped() -> None:
-    settings = type("S", (), {
-        "sinaica_rpc_url": "https://sinaica.inecc.gob.mx/lib/libd/cnxn.php",
-        "sinaica_graph_url": "https://sinaica.inecc.gob.mx/pags/datGrafs.php",
-    })()
-    now = datetime(2026, 8, 13, 18, tzinfo=timezone.utc)
-    station = {"id": "102", "name": "Guadalajara", "agency": "SIMAJ", "lat": 20.67, "lon": -103.35, "zone": sinaica_timezone("Jalisco", "Guadalajara", 20.67, -103.35)}
+    settings = type(
+        "S",
+        (),
+        {
+            "sinaica_rpc_url": "https://sinaica.inecc.gob.mx/lib/libd/cnxn.php",
+            "sinaica_graph_url": "https://sinaica.inecc.gob.mx/pags/datGrafs.php",
+        },
+    )()
+    now = datetime(2026, 8, 13, 18, tzinfo=UTC)
+    station = {
+        "id": "102",
+        "name": "Guadalajara",
+        "agency": "SIMAJ",
+        "lat": 20.67,
+        "lon": -103.35,
+        "zone": sinaica_timezone("Jalisco", "Guadalajara", 20.67, -103.35),
+    }
     with patch("ingest.sources.sinaica.fetch", side_effect=RuntimeError("timeout")):
         assert _station_metadata(settings, "102", "Guadalajara") is None
         monitor, stale = _station_hours(settings, station, now)
@@ -677,17 +842,21 @@ def test_sinaica_station_request_failure_is_skipped() -> None:
 
 
 def test_sinaica_parallel_metadata_skips_ineligible_station() -> None:
-    settings = type("S", (), {
-        "sinaica_enabled": True,
-        "sinaica_base_url": "https://sinaica.inecc.gob.mx/",
-        "sinaica_stations_url": "https://sinaica.inecc.gob.mx/data.php",
-        "sinaica_rpc_url": "https://sinaica.inecc.gob.mx/lib/libd/cnxn.php",
-        "sinaica_graph_url": "https://sinaica.inecc.gob.mx/pags/datGrafs.php",
-        "sinaica_min_stations": 1,
-        "sinaica_concurrency": 2,
-        "sinaica_stale_rate": 0.85,
-    })()
-    now = datetime(2026, 8, 13, 18, tzinfo=timezone.utc)
+    settings = type(
+        "S",
+        (),
+        {
+            "sinaica_enabled": True,
+            "sinaica_base_url": "https://sinaica.inecc.gob.mx/",
+            "sinaica_stations_url": "https://sinaica.inecc.gob.mx/data.php",
+            "sinaica_rpc_url": "https://sinaica.inecc.gob.mx/lib/libd/cnxn.php",
+            "sinaica_graph_url": "https://sinaica.inecc.gob.mx/pags/datGrafs.php",
+            "sinaica_min_stations": 1,
+            "sinaica_concurrency": 2,
+            "sinaica_stale_rate": 0.85,
+        },
+    )()
+    now = datetime(2026, 8, 13, 18, tzinfo=UTC)
     html = (
         b'<select id="estacion"><option value="102">Guadalajara</option>'
         b'<option value="103">Ineligible</option>'
@@ -706,11 +875,11 @@ def test_sinaica_parallel_metadata_skips_ineligible_station() -> None:
     metadata_ids: list[str] = []
     hour_ids: list[str] = []
 
-    def metadata(_settings, identifier, _fallback_name):
+    def metadata(_settings: Any, identifier: Any, _fallback_name: Any) -> Any:
         metadata_ids.append(identifier)
         return station if identifier == "102" else None
 
-    def hours(_settings, item, _now):
+    def hours(_settings: Any, item: Any, _now: Any) -> Any:
         hour_ids.append(item["id"])
         return monitor, False
 
@@ -726,28 +895,34 @@ def test_sinaica_parallel_metadata_skips_ineligible_station() -> None:
 
 def test_airnow_tiles_overlap_at_a_concurrency_barrier() -> None:
     barrier = threading.Barrier(4, timeout=2)
-    now = datetime(2026, 8, 13, 18, tzinfo=timezone.utc)
-    settings = type("S", (), {
-        "airnow_api_key": "key",
-        "airnow_base_url": "https://www.airnowapi.org/aq/data/",
-    })()
+    now = datetime(2026, 8, 13, 18, tzinfo=UTC)
+    settings = type(
+        "S",
+        (),
+        {
+            "airnow_api_key": "key",
+            "airnow_base_url": "https://www.airnowapi.org/aq/data/",
+        },
+    )()
 
-    def fake_fetch(url, **kwargs):
+    def fake_fetch(url: Any, **kwargs: Any) -> Any:
         barrier.wait()
         bbox = kwargs["params"]["BBOX"]
-        payload = [{
-            "Parameter": "PM2.5",
-            "Latitude": 47.6,
-            "Longitude": -122.3,
-            "AQI": 40,
-            "Value": 10,
-            "Unit": "UG/M3",
-            "UTC": "2026-08-13T17:00:00Z",
-            "FullAQSCode": bbox,
-            "SiteName": "Tile",
-            "AgencyName": "AirNow",
-            "Category": {"Name": "Good"},
-        }]
+        payload = [
+            {
+                "Parameter": "PM2.5",
+                "Latitude": 47.6,
+                "Longitude": -122.3,
+                "AQI": 40,
+                "Value": 10,
+                "Unit": "UG/M3",
+                "UTC": "2026-08-13T17:00:00Z",
+                "FullAQSCode": bbox,
+                "SiteName": "Tile",
+                "AgencyName": "AirNow",
+                "Category": {"Name": "Good"},
+            }
+        ]
         return json.dumps(payload).encode()
 
     with patch("ingest.sources.airnow.fetch", side_effect=fake_fetch):
@@ -757,21 +932,25 @@ def test_airnow_tiles_overlap_at_a_concurrency_barrier() -> None:
 
 def test_sinaica_reuses_cached_station_metadata(tmp_path: Path) -> None:
     store = LocalFrameStore(tmp_path)
-    now = datetime(2026, 8, 13, 18, tzinfo=timezone.utc)
-    settings = type("S", (), {
-        "sinaica_enabled": True,
-        "sinaica_base_url": "https://sinaica.inecc.gob.mx/",
-        "sinaica_stations_url": "https://sinaica.inecc.gob.mx/data.php",
-        "sinaica_rpc_url": "https://sinaica.inecc.gob.mx/lib/libd/cnxn.php",
-        "sinaica_graph_url": "https://sinaica.inecc.gob.mx/pags/datGrafs.php",
-        "sinaica_min_stations": 1,
-        "sinaica_concurrency": 1,
-        "sinaica_stale_rate": 0.85,
-    })()
+    now = datetime(2026, 8, 13, 18, tzinfo=UTC)
+    settings = type(
+        "S",
+        (),
+        {
+            "sinaica_enabled": True,
+            "sinaica_base_url": "https://sinaica.inecc.gob.mx/",
+            "sinaica_stations_url": "https://sinaica.inecc.gob.mx/data.php",
+            "sinaica_rpc_url": "https://sinaica.inecc.gob.mx/lib/libd/cnxn.php",
+            "sinaica_graph_url": "https://sinaica.inecc.gob.mx/pags/datGrafs.php",
+            "sinaica_min_stations": 1,
+            "sinaica_concurrency": 1,
+            "sinaica_stale_rate": 0.85,
+        },
+    )()
     html = b'<select id="estacion"><option value="102">Guadalajara</option></select>'
     methods: list[str] = []
 
-    def fake_fetch(url, **kwargs):
+    def fake_fetch(url: Any, **kwargs: Any) -> Any:
         data = kwargs.get("data") or {}
         method = data.get("metodo")
         if method:
@@ -779,19 +958,23 @@ def test_sinaica_reuses_cached_station_metadata(tmp_path: Path) -> None:
             if method == "getParamsPorEstAjax":
                 return json.dumps([{"id": "PM2.5"}]).encode()
             if method == "infoEstacion":
-                return json.dumps({
-                    "lat": 20.67,
-                    "long": -103.35,
-                    "edo": "Jalisco",
-                    "munc": "Guadalajara",
-                    "nombre": "Guadalajara",
-                    "redNom": "SIMAJ",
-                }).encode()
+                return json.dumps(
+                    {
+                        "lat": 20.67,
+                        "long": -103.35,
+                        "edo": "Jalisco",
+                        "munc": "Guadalajara",
+                        "nombre": "Guadalajara",
+                        "redNom": "SIMAJ",
+                    }
+                ).encode()
         if "datGrafs" in url:
-            return json.dumps([
-                {"valor": 14, "fecha": "2026-08-13", "hora": 11},
-                {"valor": 15, "fecha": "2026-08-13", "hora": 12},
-            ]).encode()
+            return json.dumps(
+                [
+                    {"valor": 14, "fecha": "2026-08-13", "hora": 11},
+                    {"valor": 15, "fecha": "2026-08-13", "hora": 12},
+                ]
+            ).encode()
         return html
 
     with patch("ingest.sources.sinaica.fetch", side_effect=fake_fetch):
@@ -803,45 +986,53 @@ def test_sinaica_reuses_cached_station_metadata(tmp_path: Path) -> None:
 
 
 def test_sinaica_cache_failure_falls_back_to_metadata_refresh() -> None:
-    now = datetime(2026, 8, 13, 18, tzinfo=timezone.utc)
-    settings = type("S", (), {
-        "sinaica_enabled": True,
-        "sinaica_base_url": "https://sinaica.inecc.gob.mx/",
-        "sinaica_stations_url": "https://sinaica.inecc.gob.mx/data.php",
-        "sinaica_rpc_url": "https://sinaica.inecc.gob.mx/lib/libd/cnxn.php",
-        "sinaica_graph_url": "https://sinaica.inecc.gob.mx/pags/datGrafs.php",
-        "sinaica_min_stations": 1,
-        "sinaica_concurrency": 1,
-        "sinaica_stale_rate": 0.85,
-    })()
+    now = datetime(2026, 8, 13, 18, tzinfo=UTC)
+    settings = type(
+        "S",
+        (),
+        {
+            "sinaica_enabled": True,
+            "sinaica_base_url": "https://sinaica.inecc.gob.mx/",
+            "sinaica_stations_url": "https://sinaica.inecc.gob.mx/data.php",
+            "sinaica_rpc_url": "https://sinaica.inecc.gob.mx/lib/libd/cnxn.php",
+            "sinaica_graph_url": "https://sinaica.inecc.gob.mx/pags/datGrafs.php",
+            "sinaica_min_stations": 1,
+            "sinaica_concurrency": 1,
+            "sinaica_stale_rate": 0.85,
+        },
+    )()
     html = b'<select id="estacion"><option value="102">Guadalajara</option></select>'
 
     class BrokenStore:
         def get_text(self, pathname: str) -> str | None:
             raise RuntimeError("corrupt")
 
-        def put_json(self, *args, **kwargs):
+        def put_json(self, *args: Any, **kwargs: Any) -> None:
             raise RuntimeError("write fail")
 
-    def fake_fetch(url, **kwargs):
+    def fake_fetch(url: Any, **kwargs: Any) -> Any:
         data = kwargs.get("data") or {}
         method = data.get("metodo")
         if method == "getParamsPorEstAjax":
             return json.dumps([{"id": "PM2.5"}]).encode()
         if method == "infoEstacion":
-            return json.dumps({
-                "lat": 20.67,
-                "long": -103.35,
-                "edo": "Jalisco",
-                "munc": "Guadalajara",
-                "nombre": "Guadalajara",
-                "redNom": "SIMAJ",
-            }).encode()
+            return json.dumps(
+                {
+                    "lat": 20.67,
+                    "long": -103.35,
+                    "edo": "Jalisco",
+                    "munc": "Guadalajara",
+                    "nombre": "Guadalajara",
+                    "redNom": "SIMAJ",
+                }
+            ).encode()
         if "datGrafs" in url:
-            return json.dumps([
-                {"valor": 14, "fecha": "2026-08-13", "hora": 11},
-                {"valor": 15, "fecha": "2026-08-13", "hora": 12},
-            ]).encode()
+            return json.dumps(
+                [
+                    {"valor": 14, "fecha": "2026-08-13", "hora": 11},
+                    {"valor": 15, "fecha": "2026-08-13", "hora": 12},
+                ]
+            ).encode()
         return html
 
     with patch("ingest.sources.sinaica.fetch", side_effect=fake_fetch):

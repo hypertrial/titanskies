@@ -1,15 +1,16 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
-import json
 import hashlib
+import json
 import os
 import re
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from ingest.config import watch_limits  # noqa: E402
 from ingest.context_contracts import (  # noqa: E402
     CONTEXT_JSON_BUDGET_BYTES,
     CONTEXT_RASTER_BUDGET_BYTES,
@@ -45,6 +46,8 @@ def asset_paths(value: object) -> set[tuple[str, str, str]]:
     if not paths:
         raise ValueError("manifest has no assets")
     return paths
+
+
 try:
     status_bytes = store.get_bytes("context/status.json", max_bytes=CONTEXT_JSON_BUDGET_BYTES)
     pointer_bytes = store.get_bytes("context/latest.json", max_bytes=CONTEXT_JSON_BUDGET_BYTES)
@@ -54,8 +57,9 @@ try:
     pointer = json.loads(pointer_bytes)
     attempted = datetime.fromisoformat(status["lastAttemptAt"].replace("Z", "+00:00"))
     complete = datetime.fromisoformat(status["lastCompleteForecastAt"].replace("Z", "+00:00"))
-    watch = int(os.environ.get("CONTEXT_WATCH_SECONDS", "900"))
-    maximum_age = max(1800, min(3600, max(60, watch)) * 2)
+    default_watch, min_watch, max_watch = watch_limits()
+    watch = int(os.environ.get("CONTEXT_WATCH_SECONDS", str(default_watch)))
+    maximum_age = max(1800, min(max_watch, max(min_watch, watch)) * 2)
     manifest_path = pointer.get("manifestPath")
     match = manifest_pattern.fullmatch(manifest_path or "")
     if (
@@ -86,7 +90,7 @@ try:
             json.loads(asset)
     frames = manifest["forecast"].get("frames", [])
     last_valid = datetime.fromisoformat(frames[-1]["validTime"].replace("Z", "+00:00"))
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     healthy = (
         status.get("version") == 1
         and status.get("outcome") in {"fresh", "retained", "failed"}

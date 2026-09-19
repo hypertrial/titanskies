@@ -49,10 +49,14 @@ if ! command -v gitleaks >/dev/null 2>&1; then
   printf '%s\n' "$tools_dir" >> "$GITHUB_PATH"
 fi
 
-if [ "$(uname -s)" = Linux ]; then
-  npx playwright install --with-deps chromium webkit
-else
-  npx playwright install chromium webkit
+if [ "${SKIP_PLAYWRIGHT:-}" != 1 ]; then
+  if [ "$(uname -s)" = Linux ]; then
+    npx playwright install --with-deps chromium webkit
+  else
+    npx playwright install chromium webkit
+  fi
 fi
 
-docker info >/dev/null
+if [ "${SKIP_DOCKER:-}" != 1 ]; then
+  docker info >/dev/null
+fi

@@ -1,0 +1,8 @@
+#!/bin/sh
+set -eu
+
+cd "$(dirname "$0")/.."
+
+./scripts/run_python.sh scripts/benchmark_context.py
+./scripts/run_python.sh scripts/license_report.py
+./scripts/run_python.sh scripts/generate_sbom.py artifacts/sbom.cdx.json

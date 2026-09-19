@@ -4,6 +4,7 @@ import json
 import logging
 from email.message import Message
 from io import BytesIO
+from typing import Any
 
 import pytest
 
@@ -12,9 +13,9 @@ from api.context import handler
 SECRET = "secret-secret-secret"
 
 
-def invoke(monkeypatch, *, method: str = "GET", authorization: str | None = None, run=None):
-    monkeypatch.setattr("ingest.cron._load_env_files", lambda: None)
-    monkeypatch.setattr("ingest.config._load_env_files", lambda: None)
+def invoke(monkeypatch: Any, *, method: str = "GET", authorization: str | None = None, run: Any = None) -> Any:
+    monkeypatch.setattr("ingest.cron.load_env_files", lambda: None)
+    monkeypatch.setattr("ingest.config.load_env_files", lambda: None)
     if run is not None:
         monkeypatch.setattr("api.context._run", run)
     instance = handler.__new__(handler)
@@ -35,12 +36,12 @@ def invoke(monkeypatch, *, method: str = "GET", authorization: str | None = None
 
 
 @pytest.fixture(autouse=True)
-def cron_secret(monkeypatch):
+def cron_secret(monkeypatch: Any) -> None:
     monkeypatch.setenv("CRON_SECRET", SECRET)
 
 
 @pytest.mark.parametrize("authorization", [None, "", "Bearer wrong", "Bearer short"])
-def test_cron_rejects_invalid_auth_without_running(monkeypatch, authorization) -> None:
+def test_cron_rejects_invalid_auth_without_running(monkeypatch: Any, authorization: Any) -> None:
     calls: list[object] = []
     status, payload = invoke(monkeypatch, authorization=authorization, run=lambda settings: calls.append(settings))
     assert status == 401
@@ -48,19 +49,24 @@ def test_cron_rejects_invalid_auth_without_running(monkeypatch, authorization) -
     assert calls == []
 
 
-def test_cron_get_runs_once_and_returns_result(monkeypatch) -> None:
+def test_cron_get_runs_once_and_returns_result(monkeypatch: Any) -> None:
     calls: list[object] = []
+
+    def run(settings: Any) -> dict[str, Any]:
+        calls.append(settings)
+        return {"ok": True, "mode": "demo"}
+
     status, payload = invoke(
         monkeypatch,
         authorization=f"Bearer {SECRET}",
-        run=lambda settings: calls.append(settings) or {"ok": True, "mode": "demo"},
+        run=run,
     )
     assert status == 200
     assert payload == {"ok": True, "mode": "demo"}
     assert len(calls) == 1
 
 
-def test_cron_head_authenticates_without_ingest(monkeypatch) -> None:
+def test_cron_head_authenticates_without_ingest(monkeypatch: Any) -> None:
     calls: list[object] = []
     status, payload = invoke(
         monkeypatch,
@@ -73,7 +79,7 @@ def test_cron_head_authenticates_without_ingest(monkeypatch) -> None:
     assert calls == []
 
 
-def test_cron_pipeline_failure_is_structured(monkeypatch) -> None:
+def test_cron_pipeline_failure_is_structured(monkeypatch: Any) -> None:
     status, payload = invoke(
         monkeypatch,
         authorization=f"Bearer {SECRET}",
@@ -83,8 +89,8 @@ def test_cron_pipeline_failure_is_structured(monkeypatch) -> None:
     assert payload == {"ok": False, "error": "provider failed"}
 
 
-def test_cron_exception_is_redacted_in_response_and_logs(monkeypatch, caplog) -> None:
-    def fail(_settings):
+def test_cron_exception_is_redacted_in_response_and_logs(monkeypatch: Any, caplog: Any) -> None:
+    def fail(_settings: Any) -> None:
         raise RuntimeError("CRON_SECRET=should-not-leak BLOB_READ_WRITE_TOKEN=also-secret")
 
     caplog.set_level(logging.ERROR)
@@ -96,7 +102,7 @@ def test_cron_exception_is_redacted_in_response_and_logs(monkeypatch, caplog) ->
 
 
 @pytest.mark.parametrize("method", ["POST", "PUT", "DELETE", "PATCH", "OPTIONS"])
-def test_cron_rejects_other_methods(monkeypatch, method) -> None:
+def test_cron_rejects_other_methods(monkeypatch: Any, method: Any) -> None:
     status, payload = invoke(monkeypatch, method=method, authorization=f"Bearer {SECRET}")
     assert status == 405
     assert payload == {"ok": False, "error": "Method not allowed"}

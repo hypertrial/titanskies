@@ -8,7 +8,7 @@ curl -sS http://127.0.0.1:8080/api/context-health?expectedVersion=8
 docker compose logs web ingest
 ```
 
-HTTP 503 is expected during first-start initialization. `degraded` with HTTP 200 means a valid publication remains usable but one or more providers failed, became stale, or were retained. AirNow `unavailable` is expected when `AIRNOW_API_KEY` is empty. The health heartbeat expires after twice `CONTEXT_WATCH_SECONDS`, with a 30-minute minimum.
+HTTP 503 is expected during first-start initialization. `degraded` with HTTP 200 means a valid publication remains usable but one or more providers failed, became stale, or were retained. AirNow `unavailable` is expected when `AIRNOW_API_KEY` is empty. The health heartbeat expires after twice `CONTEXT_WATCH_SECONDS`, with a 30-minute minimum. `COMPOSE_CONCURRENCY` (1-4, default 1) parallelizes v8 frame composition; raise it only after `scripts/benchmark_context.py` shows a wall-time win under the 768 MiB RSS cap.
 
 ## Backup and recovery
 

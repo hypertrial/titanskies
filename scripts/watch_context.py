@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import sys
 import time
 from pathlib import Path
@@ -12,20 +11,11 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-DEFAULT_WATCH_SECONDS = 900
-MIN_WATCH_SECONDS = 60
-MAX_WATCH_SECONDS = 3600
 
+def watch_interval_seconds(raw: str | int | None = None) -> int:
+    from ingest.config import watch_interval_seconds as clamp_watch_seconds
 
-def watch_interval_seconds(raw: str | None = None) -> int:
-    value = DEFAULT_WATCH_SECONDS if raw is None else raw
-    if isinstance(value, str) and not value.strip():
-        value = DEFAULT_WATCH_SECONDS
-    try:
-        seconds = int(value)
-    except (TypeError, ValueError):
-        seconds = DEFAULT_WATCH_SECONDS
-    return min(MAX_WATCH_SECONDS, max(MIN_WATCH_SECONDS, seconds))
+    return clamp_watch_seconds(raw)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -40,9 +30,7 @@ def main(argv: list[str] | None = None) -> int:
 
     from ingest.context_pipeline import run_context_ingest
 
-    interval = watch_interval_seconds(
-        str(args.interval) if args.interval is not None else os.environ.get("CONTEXT_WATCH_SECONDS")
-    )
+    interval = watch_interval_seconds(str(args.interval)) if args.interval is not None else settings.watch_seconds
 
     while True:
         started = time.monotonic()

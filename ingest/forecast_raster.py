@@ -52,15 +52,16 @@ class HrrrGrid:
     radius: float = HRRR_RADIUS_M
 
 
+DEFAULT_HRRR_GRID = HrrrGrid()
+
+
 def _lcc_params(grid: HrrrGrid) -> tuple[float, float, float, float, float]:
     latin1 = np.deg2rad(grid.latin1)
     latin2 = np.deg2rad(grid.latin2)
     if abs(grid.latin1 - grid.latin2) < 1e-8:
         n = np.sin(latin1)
     else:
-        n = np.log(np.cos(latin1) / np.cos(latin2)) / np.log(
-            np.tan(np.pi / 4 + latin2 / 2) / np.tan(np.pi / 4 + latin1 / 2)
-        )
+        n = np.log(np.cos(latin1) / np.cos(latin2)) / np.log(np.tan(np.pi / 4 + latin2 / 2) / np.tan(np.pi / 4 + latin1 / 2))
     f_const = np.cos(latin1) * (np.tan(np.pi / 4 + latin1 / 2) ** n) / n
     rho0 = grid.radius * f_const / (np.tan(np.pi / 4 + latin1 / 2) ** n)
     lat1 = np.deg2rad(grid.lat1)
@@ -73,7 +74,7 @@ def _lcc_params(grid: HrrrGrid) -> tuple[float, float, float, float, float]:
     return float(n), float(f_const), float(rho0), float(x0), float(y0)
 
 
-def lonlat_to_hrrr_xy(lon: np.ndarray, lat: np.ndarray, grid: HrrrGrid = HrrrGrid()) -> tuple[np.ndarray, np.ndarray]:
+def lonlat_to_hrrr_xy(lon: np.ndarray, lat: np.ndarray, grid: HrrrGrid = DEFAULT_HRRR_GRID) -> tuple[np.ndarray, np.ndarray]:
     n, f_const, rho0, x0, y0 = _lcc_params(grid)
     lon_r = np.deg2rad(np.asarray(lon, dtype=np.float64))
     lat_r = np.deg2rad(np.asarray(lat, dtype=np.float64))
@@ -85,7 +86,7 @@ def lonlat_to_hrrr_xy(lon: np.ndarray, lat: np.ndarray, grid: HrrrGrid = HrrrGri
     return (x - x0) / grid.dx, (y - y0) / grid.dy
 
 
-def hrrr_xy_to_lonlat(x: np.ndarray, y: np.ndarray, grid: HrrrGrid = HrrrGrid()) -> tuple[np.ndarray, np.ndarray]:
+def hrrr_xy_to_lonlat(x: np.ndarray, y: np.ndarray, grid: HrrrGrid = DEFAULT_HRRR_GRID) -> tuple[np.ndarray, np.ndarray]:
     n, f_const, rho0, x0, y0 = _lcc_params(grid)
     x_m = np.asarray(x, dtype=np.float64) * grid.dx + x0
     y_m = np.asarray(y, dtype=np.float64) * grid.dy + y0
@@ -206,13 +207,13 @@ def reproject_hrrr(
     return _bilinear(field, x, y)
 
 
-def domain_mask(grid: HrrrGrid = HrrrGrid(), raster_grid: RasterGrid = BASE_RASTER_GRID) -> np.ndarray:
+def domain_mask(grid: HrrrGrid = DEFAULT_HRRR_GRID, raster_grid: RasterGrid = BASE_RASTER_GRID) -> np.ndarray:
     x, y = hrrr_sample_xy(grid, raster_grid)
     return (x >= 0) & (y >= 0) & (x <= grid.nx - 1) & (y <= grid.ny - 1)
 
 
 def hrrr_edge_weights(
-    grid: HrrrGrid = HrrrGrid(),
+    grid: HrrrGrid = DEFAULT_HRRR_GRID,
     feather_km: float = 200.0,
     raster_grid: RasterGrid = BASE_RASTER_GRID,
 ) -> np.ndarray:
@@ -239,4 +240,6 @@ def rasterize_hrrr(
 
 def rasterize_hrrr_png(values: np.ndarray, valid: np.ndarray | None = None, grid: HrrrGrid | None = None) -> tuple[bytes, np.ndarray]:
     png, _sample, sample_valid = rasterize_hrrr(values, valid, grid)
+    if png is None:
+        raise RuntimeError("HRRR raster encoding produced no PNG")
     return png, sample_valid
