@@ -163,6 +163,17 @@ def _release_checkout(tmp_path: Path) -> tuple[Path, dict[str, str], Path, Path]
         '  verify) [ "${FAKE_BAD_SIGNATURE:-0}" != 1 ] && [ -f "$FAKE_STATE/signed" ] ;;\n'
         'esac\n',
     )
+    _executable(
+        fake_bin / "curl",
+        'printf "curl %s\\n" "$*" >> "$FAKE_LOG"\n'
+        'case "$*" in\n'
+        '  *ghcr.io/token*) printf "{\\"token\\":\\"anonymous-token\\"}\\n" ;;\n'
+        '  *ghcr.io/v2/hypertrial/titanskies/manifests/*)\n'
+        '    [ "${FAKE_ANON_FAIL:-0}" != 1 ] || exit 22\n'
+        '    printf "{}\\n" ;;\n'
+        '  *) exit 1 ;;\n'
+        'esac\n',
+    )
 
     env = {
         **os.environ,
@@ -533,7 +544,8 @@ def test_release_visibility_failure_stops_before_latest_and_resumes_exact_versio
     second = _run_release(repo, env)
     assert second.returncode == 0, second.stderr
     assert _commands(log).count("docker DOCKER_CONFIG= buildx build") == 1
-    assert "DOCKER_CONFIG=/" in _commands(log)
+    assert "ghcr.io/v2/hypertrial/titanskies/manifests/v0.1.0" in _commands(log)
+    assert "DOCKER_CONFIG=/" not in _commands(log)
 
 
 def test_release_never_overwrites_existing_github_release(tmp_path: Path) -> None:
