@@ -41,13 +41,3 @@ Record decisions with `pad item decide`. Represent blockers as Pad dependencies,
 Incomplete work must include a handoff a fresh agent can resume without chat history.
 
 R2/R3 work needs independent adversarial review before `done`.
-
-## Repository owner authority
-
-The repository owner, GitHub user `mattfaltyn`, may merge without another
-person's approval and may bypass branch protections, required reviews, or
-required checks when they explicitly request that action. Treat the owner's
-direct merge instruction as authorization to use the narrowest necessary
-bypass; do not wait for a separate reviewer. This authority does not extend to
-other users and does not permit force-pushing or rewriting published release
-tags unless the owner explicitly requests that specific destructive action.
