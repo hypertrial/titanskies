@@ -83,6 +83,7 @@ See [`.env.example`](.env.example). The stable public settings are:
 | `INGEST_BUDGET_SECONDS` | `300` | Maximum ingest runtime budget |
 | `INGEST_HTTP_CONCURRENCY` | `12` | Global provider request limit |
 | `CONTEXT_SOURCE_CONCURRENCY` | `3` | Concurrent observation/incident sources |
+| `COMPOSE_CONCURRENCY` | `1` | Parallel v8 frame composition, clamped to 1–4 |
 | `HRRR_SMOKE_ENABLED` | `true` | Fetch NOAA HRRR smoke when live |
 | `HRRR_CONCURRENCY` | `4` | Concurrent HRRR forecast work |
 | `FIREWORK_CONCURRENCY` | `6` | Concurrent FireWork forecast work |
