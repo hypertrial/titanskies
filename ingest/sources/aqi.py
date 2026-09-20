@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from collections.abc import Sequence
+from datetime import UTC, datetime, timedelta
 from decimal import ROUND_DOWN, ROUND_HALF_UP, Decimal
-from typing import Sequence
 
 AQI_METHOD_PROVIDER = "provider"
 AQI_METHOD_NOWCAST = "epa-nowcast-2024"
@@ -97,7 +97,7 @@ def pm25_aqi(concentration: Decimal) -> int:
 def clock_hours(series: dict[datetime, Decimal], end: datetime) -> list[Decimal | None]:
     aligned = end.replace(minute=0, second=0, microsecond=0)
     if aligned.tzinfo is None:
-        aligned = aligned.replace(tzinfo=timezone.utc)
+        aligned = aligned.replace(tzinfo=UTC)
     hours: list[Decimal | None] = []
     for age in range(NOWCAST_HOURS):
         slot = aligned - timedelta(hours=age)

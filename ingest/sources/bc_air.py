@@ -3,14 +3,13 @@ from __future__ import annotations
 import csv
 import io
 from collections import defaultdict
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 from typing import Any
-from urllib.parse import urlparse
 
 from ingest.config import Settings
 from ingest.context_contracts import in_monitor_bounds, iso_utc
-from ingest.http import fetch
+from ingest.http import clean_text, fetch, require_host
 from ingest.sources.aqi import AQI_METHOD_NOWCAST, NOWCAST_HOURS, aqi_category, is_pm25_mass_unit, nowcast_aqi
 
 BC_AIR_URL = "https://www2.gov.bc.ca/gov/content/environment/air-land-water/air/air-quality/current-air-quality-data"
@@ -38,8 +37,8 @@ def parse_bc_stations(text: str) -> dict[str, dict[str, Any]]:
         if not in_monitor_bounds(lon, lat):
             continue
         stations[identifier] = {
-            "name": _clean(row.get("STATION_NAME") or row.get("Station Name") or identifier),
-            "agency": _clean(row.get("STATION_OWNER") or row.get("OWNER") or "British Columbia ENV"),
+            "name": clean_text(row.get("STATION_NAME") or row.get("Station Name") or identifier),
+            "agency": clean_text(row.get("STATION_OWNER") or row.get("OWNER") or "British Columbia ENV"),
             "lat": lat,
             "lon": lon,
         }
@@ -74,7 +73,7 @@ def parse_bc_hourly(text: str, stations: dict[str, dict[str, Any]], now: datetim
         if observed is None or observed > now + timedelta(minutes=15) or observed < oldest:
             continue
         series[identifier][observed.replace(minute=0, second=0, microsecond=0)] = value
-        names[identifier] = _clean(row.get("STATION_NAME") or row.get("Station Name") or identifier)
+        names[identifier] = clean_text(row.get("STATION_NAME") or row.get("Station Name") or identifier)
         try:
             lat = float(row.get("LATITUDE") or row.get("Latitude") or "")
             lon = float(row.get("LONGITUDE") or row.get("Longitude") or "")
@@ -96,33 +95,35 @@ def parse_bc_hourly(text: str, stations: dict[str, dict[str, Any]], now: datetim
         aqi, nowcast = computed
         latest_hour = max(hours)
         latest_value = hours[latest_hour]
-        monitors.append({
-            "id": f"bcair:{identifier}",
-            "name": station.get("name") or names.get(identifier) or identifier,
-            "agency": station.get("agency") or "British Columbia ENV",
-            "lat": lat,
-            "lon": lon,
-            "observedAt": iso_utc(latest_hour.astimezone(timezone.utc)),
-            "aqi": aqi,
-            "category": aqi_category(aqi),
-            "concentration": float(latest_value),
-            "nowcastConcentration": float(nowcast),
-            "unit": "µg/m³",
-            "source": "bcair",
-            "sourceUrl": BC_AIR_URL,
-            "aqiMethod": AQI_METHOD_NOWCAST,
-            "indexSystem": "us-epa-pm25-aqi",
-            "indexValue": aqi,
-            "indexMethod": AQI_METHOD_NOWCAST,
-            "country": "CA",
-            "preliminary": True,
-        })
+        monitors.append(
+            {
+                "id": f"bcair:{identifier}",
+                "name": station.get("name") or names.get(identifier) or identifier,
+                "agency": station.get("agency") or "British Columbia ENV",
+                "lat": lat,
+                "lon": lon,
+                "observedAt": iso_utc(latest_hour.astimezone(UTC)),
+                "aqi": aqi,
+                "category": aqi_category(aqi),
+                "concentration": float(latest_value),
+                "nowcastConcentration": float(nowcast),
+                "unit": "µg/m³",
+                "source": "bcair",
+                "sourceUrl": BC_AIR_URL,
+                "aqiMethod": AQI_METHOD_NOWCAST,
+                "indexSystem": "us-epa-pm25-aqi",
+                "indexValue": aqi,
+                "indexMethod": AQI_METHOD_NOWCAST,
+                "country": "CA",
+                "preliminary": True,
+            }
+        )
     return sorted(monitors, key=lambda item: item["id"])
 
 
 def fetch_bc_air(settings: Settings, now: datetime, previous_count: int | None = None) -> list[dict[str, Any]]:
-    _require_host(settings.bc_hourly_url, BC_HOSTS)
-    _require_host(settings.bc_stations_url, BC_HOSTS)
+    require_host(settings.bc_hourly_url, BC_HOSTS)
+    require_host(settings.bc_stations_url, BC_HOSTS)
     from ingest.http_pool import map_bounded
 
     hourly, stations_text = map_bounded(
@@ -147,17 +148,7 @@ def _parse_pst(value: str) -> datetime | None:
     for fmt in ("%Y-%m-%d %H:%M", "%Y-%m-%d %H:%M:%S", "%Y/%m/%d %H:%M", "%d/%m/%Y %H:%M"):
         try:
             parsed = datetime.strptime(text, fmt).replace(tzinfo=BC_PST)
-            return parsed.astimezone(timezone.utc)
+            return parsed.astimezone(UTC)
         except ValueError:
             continue
     return None
-
-
-def _require_host(url: str, hosts: frozenset[str]) -> None:
-    host = urlparse(url).hostname or ""
-    if host not in hosts:
-        raise ValueError(f"blocked BC Air host {host}")
-
-
-def _clean(value: Any, limit: int = 120) -> str:
-    return " ".join(str(value).split())[:limit]

@@ -18,6 +18,10 @@ const candidate = new Vector3();
 const hoverPoint = new Vector3();
 const publishClusterScreens = process.env.NODE_ENV !== "production" || process.env.NEXT_PUBLIC_PERF_DIAGNOSTICS === "1";
 
+function cameraStateKey(camera: Camera, size: { width: number; height: number }): string {
+  return `${camera.matrixWorld.elements.join(",")}|${camera.projectionMatrix.elements.join(",")}|${size.width}x${size.height}`;
+}
+
 function closestIndex(hits: readonly Intersection[], object: Object3D, positions: Float32Array, camera: Camera, pointer: Vector2, viewport: { width: number; height: number }, maxDistancePx: number): number | null {
   let closest: number | null = null;
   let distance = maxDistancePx * maxDistancePx;
@@ -162,7 +166,12 @@ export function AirContextPoints({ items, mobile, selectedMonitorIds, suppressHo
   const screenPoint = useMemo(() => new Vector3(), []);
   const [memberships, setMemberships] = useState<string[][]>([]);
   const identity = useRef("");
+  const clusterMemo = useRef<{ cameraKey: string; data: typeof prepared; touch: boolean } | null>(null);
   useFrame(() => {
+    const cameraKey = cameraStateKey(camera, size);
+    const memo = clusterMemo.current;
+    if (memo && memo.cameraKey === cameraKey && memo.data === prepared && memo.touch === touch) return;
+    clusterMemo.current = { cameraKey, data: prepared, touch };
     const startedAt = process.env.NEXT_PUBLIC_PERF_DIAGNOSTICS === "1" ? performance.now() : 0;
     const projected = projectedRef.current;
     projected.length = 0;
@@ -246,7 +255,12 @@ export function IncidentContextPoints({ items, mobile, selectedIncidentIds, supp
   const screenPoint = useMemo(() => new Vector3(), []);
   const [memberships, setMemberships] = useState<string[][]>([]);
   const identity = useRef("");
+  const clusterMemo = useRef<{ cameraKey: string; data: typeof prepared; touch: boolean } | null>(null);
   useFrame(() => {
+    const cameraKey = cameraStateKey(camera, size);
+    const memo = clusterMemo.current;
+    if (memo && memo.cameraKey === cameraKey && memo.data === prepared && memo.touch === touch) return;
+    clusterMemo.current = { cameraKey, data: prepared, touch };
     const startedAt = process.env.NEXT_PUBLIC_PERF_DIAGNOSTICS === "1" ? performance.now() : 0;
     const projected = projectedRef.current;
     projected.length = 0;

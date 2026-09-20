@@ -19,22 +19,37 @@ cleanup() {
 }
 trap cleanup EXIT HUP INT TERM
 
-TITANSKIES_VERSION=$version compose --project-name "$project" build --pull
-TITANSKIES_VERSION=$version TITANSKIES_PORT=$port CONTEXT_SOURCE=demo \
-  compose --project-name "$project" up --detach
+if [ "${GITHUB_ACTIONS:-}" = true ]; then
+  docker buildx build --pull --load \
+    --cache-from type=gha --cache-to type=gha,mode=max \
+    --tag "ghcr.io/hypertrial/titanskies:$version" .
+  TITANSKIES_VERSION=$version TITANSKIES_PORT=$port CONTEXT_SOURCE=demo \
+    compose --project-name "$project" up --detach --no-build
+else
+  TITANSKIES_VERSION=$version compose --project-name "$project" build --pull
+  TITANSKIES_VERSION=$version TITANSKIES_PORT=$port CONTEXT_SOURCE=demo \
+    compose --project-name "$project" up --detach
+fi
 
-ready=0
-attempt=0
-while [ "$attempt" -lt 90 ]; do
-  if TITANSKIES_VERSION=$version TITANSKIES_PORT=$port CONTEXT_SOURCE=demo \
+. scripts/lib/wait-for-health.sh
+check_web_health() {
+  TITANSKIES_VERSION=$version TITANSKIES_PORT=$port CONTEXT_SOURCE=demo \
     compose --project-name "$project" exec --no-TTY web node -e \
-      "Promise.all([fetch('http://127.0.0.1:8080/api/healthz'),fetch('http://127.0.0.1:8080/api/context-health?expectedVersion=8')]).then(r=>process.exit(r.every(x=>x.ok)?0:1)).catch(()=>process.exit(1))"; then
-    ready=1
-    break
-  fi
-  attempt=$((attempt + 1))
-  sleep 2
-done
-[ "$ready" -eq 1 ] || { compose --project-name "$project" logs web ingest >&2; exit 1; }
+      "Promise.all([fetch('http://127.0.0.1:8080/api/healthz'),fetch('http://127.0.0.1:8080/api/context-health?expectedVersion=8')]).then(r=>process.exit(r.every(x=>x.ok)?0:1)).catch(()=>process.exit(1))"
+}
+if ! wait_for_health check_web_health; then
+  compose --project-name "$project" logs web ingest >&2
+  exit 1
+fi
+python_version=$(TITANSKIES_VERSION=$version TITANSKIES_PORT=$port CONTEXT_SOURCE=demo \
+  compose --project-name "$project" exec --no-TTY web .venv/bin/python --version)
+case "${python_version#Python }" in
+  3.12*) ;;
+  *)
+    echo "expected .venv/bin/python --version to start with 3.12, got ${python_version:-empty}" >&2
+    exit 1
+    ;;
+esac
 docker image inspect "ghcr.io/hypertrial/titanskies:$version" --format '{{.Architecture}}' >/dev/null
 printf 'container and Compose smoke passed\n'
+

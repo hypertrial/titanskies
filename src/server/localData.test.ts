@@ -4,20 +4,13 @@ import { mkdtemp, mkdir, symlink, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
+import { installTempDataDir } from "../../tests/support/tempDataDir";
 import { isLocalContextPointer, localManifestAssetsAvailable, readLocalDataFile } from "./localData";
 
-const previousRoot = process.env.TITANSKIES_DATA_DIR;
-
-async function root(): Promise<string> {
-  const directory = await mkdtemp(path.join(tmpdir(), "titanskies-data-"));
-  process.env.TITANSKIES_DATA_DIR = directory;
-  return directory;
-}
+const createDataDir = installTempDataDir();
 
 afterEach(() => {
   vi.useRealTimers();
-  if (previousRoot === undefined) delete process.env.TITANSKIES_DATA_DIR;
-  else process.env.TITANSKIES_DATA_DIR = previousRoot;
 });
 
 describe("local publication reader", () => {
@@ -29,7 +22,7 @@ describe("local publication reader", () => {
     expect(isLocalContextPointer({ ...pointer, manifestPath: "../manifest.json" })).toBe(false);
   });
   it("serves only allowlisted mutable and hashed publication paths", async () => {
-    const directory = await root();
+    const directory = await createDataDir();
     const png = Buffer.from("89504e470d0a1a0a", "hex");
     const digest = createHash("sha256").update(png).digest("hex").slice(0, 20);
     await mkdir(path.join(directory, `context/assets/${digest}`), { recursive: true });
@@ -39,6 +32,7 @@ describe("local publication reader", () => {
     await expect(readLocalDataFile(["context", "latest.json"])).resolves.toMatchObject({
       contentType: "application/json",
       immutable: false,
+      value: {},
     });
     await expect(readLocalDataFile(["context", "assets", digest, "smoke.png"])).resolves.toMatchObject({
       contentType: "image/png",
@@ -49,7 +43,7 @@ describe("local publication reader", () => {
   });
 
   it("rejects traversal, symlinks, directories, and oversized files", async () => {
-    const directory = await root();
+    const directory = await createDataDir();
     await mkdir(path.join(directory, "context/manifests"), { recursive: true });
     const outside = path.join(await mkdtemp(path.join(tmpdir(), "titanskies-outside-")), "secret.json");
     await writeFile(outside, "{}", "utf8");
@@ -63,7 +57,7 @@ describe("local publication reader", () => {
   });
 
   it("rejects invalid JSON, invalid PNG signatures, and mismatched content hashes", async () => {
-    const directory = await root();
+    const directory = await createDataDir();
     await mkdir(path.join(directory, "context/assets/aaaaaaaaaaaaaaaaaaaa"), { recursive: true });
     await mkdir(path.join(directory, "context/assets/bbbbbbbbbbbbbbbbbbbb"), { recursive: true });
     await writeFile(path.join(directory, "context/status.json"), "not json", "utf8");
@@ -78,7 +72,7 @@ describe("local publication reader", () => {
   it("deduplicates successful immutable-manifest asset verification", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-09-10T12:00:00Z"));
-    const directory = await root();
+    const directory = await createDataDir();
     const body = Buffer.from("{}");
     const digest = createHash("sha256").update(body).digest("hex").slice(0, 20);
     const pathname = `context/assets/${digest}/data.json`;

@@ -17,25 +17,29 @@ for location, item in lock["packages"].items():
         continue
     name = location.rsplit("node_modules/", 1)[-1]
     version = item.get("version", "unknown")
-    components.append({
-        "type": "library",
-        "group": name.split("/", 1)[0] if name.startswith("@") else "",
-        "name": name.split("/", 1)[-1],
-        "version": version,
-        "purl": f"pkg:npm/{quote(name, safe='/')}@{version}",
-    })
+    components.append(
+        {
+            "type": "library",
+            "group": name.split("/", 1)[0] if name.startswith("@") else "",
+            "name": name.split("/", 1)[-1],
+            "version": version,
+            "purl": f"pkg:npm/{quote(name, safe='/')}@{version}",
+        }
+    )
 uv_lock = tomllib.loads((root / "uv.lock").read_text(encoding="utf-8"))
 for item in uv_lock.get("package", []):
     name = item.get("name")
     version = item.get("version")
     if name == package["name"] or not isinstance(name, str) or not isinstance(version, str):
         continue
-    components.append({
-        "type": "library",
-        "name": name,
-        "version": version,
-        "purl": f"pkg:pypi/{quote(name)}@{version}",
-    })
+    components.append(
+        {
+            "type": "library",
+            "name": name,
+            "version": version,
+            "purl": f"pkg:pypi/{quote(name)}@{version}",
+        }
+    )
 payload = {
     "bomFormat": "CycloneDX",
     "specVersion": "1.5",

@@ -48,7 +48,7 @@ Useful modes:
 - `npm run ingest:once` performs one live refresh.
 - `npm run dev:demo` uses bundled synthetic fixtures and makes no provider requests.
 
-Run `./scripts/verify-fast` during development, `./scripts/verify` before merging, and `npm run verify:release` before a release. Scientific and publication invariants are summarized in [`AGENTS.md`](AGENTS.md).
+Run `./scripts/verify-fast` during development and `./scripts/verify` before merging. The public-release and CI gate is `./scripts/verify_release.sh` (`npm run verify:release`), which runs `scripts/verify-checks`, `scripts/verify-demo`, `scripts/verify-ingest-artifacts`, `scripts/verify-frontend`, and `scripts/verify-container-smokes` in that order. Hosted CI runs the grouped stage scripts `verify-checks`, `verify-web` (demo + frontend), and `verify-containers` (ingest artifacts + container smokes) as parallel jobs and aggregates them as the `verify-hosted` check. Scientific and publication invariants are summarized in [`AGENTS.md`](AGENTS.md).
 
 ## Read-only HTTP interfaces
 
@@ -75,15 +75,22 @@ See [`.env.example`](.env.example). The stable public settings are:
 | `TITANSKIES_BIND_ADDR` | `127.0.0.1` | Web listener |
 | `TITANSKIES_PORT` | `8080` | Web port |
 | `CONTEXT_WATCH_SECONDS` | `900` | Watch interval, clamped to 60–3600 seconds |
+| `INGEST_LOCK_SECONDS` | `420` | Ingest lock lease, clamped to 60–420 seconds |
+| `CONTEXT_ORPHAN_GC_ENABLED` | `true` | Delete orphaned context assets after a successful live publish |
 | `CONTEXT_SOURCE` | `live` | `live` or explicit network-free `demo` |
 | `FRAME_RETENTION_HOURS` | `48` | Local retention window |
 | `AIRNOW_API_KEY` | empty | Optional AirNow API key |
 | `INGEST_BUDGET_SECONDS` | `300` | Maximum ingest runtime budget |
 | `INGEST_HTTP_CONCURRENCY` | `12` | Global provider request limit |
 | `CONTEXT_SOURCE_CONCURRENCY` | `3` | Concurrent observation/incident sources |
+| `COMPOSE_CONCURRENCY` | `1` | Parallel v8 frame composition, clamped to 1–4 |
+| `HRRR_SMOKE_ENABLED` | `true` | Fetch NOAA HRRR smoke when live |
 | `HRRR_CONCURRENCY` | `4` | Concurrent HRRR forecast work |
 | `FIREWORK_CONCURRENCY` | `6` | Concurrent FireWork forecast work |
+| `SINAICA_ENABLED` | `true` | Fetch INECC/SINAICA stations when live |
 | `SINAICA_CONCURRENCY` | `4` | Concurrent SINAICA station work |
+| `SINAICA_MIN_STATIONS` | `8` | Minimum accepted SINAICA stations, clamped to 1–500 |
+| `SINAICA_STALE_RATE` | `0.85` | Fail SINAICA when the stale-station fraction exceeds this rate |
 
 ### LAN exposure
 

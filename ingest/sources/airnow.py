@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import math
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from urllib.parse import urlparse
 
@@ -32,7 +32,7 @@ def parse_airnow(payload: Any, now: datetime | None = None) -> list[dict[str, An
     if not isinstance(payload, list):
         raise ValueError("AirNow response is not a list")
     newest: dict[str, dict[str, Any]] = {}
-    horizon = (now or datetime.now(timezone.utc)) + timedelta(minutes=15)
+    horizon = (now or datetime.now(UTC)) + timedelta(minutes=15)
     for record in payload:
         item = _parse_record(record, horizon)
         if item is None:
@@ -118,13 +118,18 @@ def _parse_record(record: Any, horizon: datetime) -> dict[str, Any] | None:
     unit = str(record.get("Unit") or "µg/m³")
     if not is_pm25_mass_unit(unit):
         return None
-    if not all(math.isfinite(value) for value in (lat, lon, concentration)) or not in_monitor_bounds(lon, lat) or aqi < 0 or concentration < 0:
+    if (
+        not all(math.isfinite(value) for value in (lat, lon, concentration))
+        or not in_monitor_bounds(lon, lat)
+        or aqi < 0
+        or concentration < 0
+    ):
         return None
     observed_raw = record.get("UTC") or record.get("DateObserved")
     try:
         observed = datetime.fromisoformat(str(observed_raw).replace("Z", "+00:00"))
         if observed.tzinfo is None:
-            observed = observed.replace(tzinfo=timezone.utc)
+            observed = observed.replace(tzinfo=UTC)
     except ValueError:
         return None
     if observed > horizon:
@@ -144,7 +149,7 @@ def _parse_record(record: Any, horizon: datetime) -> dict[str, Any] | None:
         "agency": _clean_text(record.get("AgencyName") or "AirNow reporting agency"),
         "lat": lat,
         "lon": lon,
-        "observedAt": iso_utc(observed.astimezone(timezone.utc)),
+        "observedAt": iso_utc(observed.astimezone(UTC)),
         "aqi": aqi,
         "category": category_name,
         "concentration": concentration,
@@ -173,7 +178,9 @@ def _country(record: dict[str, Any], identifier: str) -> str | None:
     if state == "MX":
         return "MX"
     digits = "".join(character for character in identifier if character.isdigit())
-    if (len(digits) == 12 and digits.startswith("840")) or (len(digits) in {8, 9} and all(part.isdigit() for part in identifier.split("-"))):
+    if (len(digits) == 12 and digits.startswith("840")) or (
+        len(digits) in {8, 9} and all(part.isdigit() for part in identifier.split("-"))
+    ):
         return "US"
     return None
 

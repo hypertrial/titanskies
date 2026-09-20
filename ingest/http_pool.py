@@ -1,17 +1,15 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import nullcontext
 from contextvars import copy_context
-from typing import Callable, TypeVar, cast
-
-A = TypeVar("A")
-B = TypeVar("B")
+from typing import cast
 
 _MISSING = object()
 
 
-def map_bounded(items: list[A], worker: Callable[[A], B], *, workers: int = 6) -> list[B]:
+def map_bounded[A, B](items: list[A], worker: Callable[[A], B], *, workers: int = 6) -> list[B]:
     if not items:
         return []
     if len(items) == 1 or workers <= 1:
@@ -26,32 +24,32 @@ def map_bounded(items: list[A], worker: Callable[[A], B], *, workers: int = 6) -
     return cast(list[B], results)
 
 
-def map_isolated(items: list[A], worker: Callable[[A], B], *, workers: int = 3) -> list[B | BaseException]:
+def map_isolated[A, B](items: list[A], worker: Callable[[A], B], *, workers: int = 3) -> list[B | BaseException]:
     if not items:
         return []
     if len(items) == 1 or workers <= 1:
-        results: list[B | BaseException] = []
+        sequential: list[B | BaseException] = []
         for item in items:
             try:
-                results.append(worker(item))
+                sequential.append(worker(item))
             except BaseException as exc:
-                results.append(exc)
-        return results
-    results: list[B | BaseException | object] = [_MISSING] * len(items)
+                sequential.append(exc)
+        return sequential
+    pending: list[B | BaseException | object] = [_MISSING] * len(items)
     with ThreadPoolExecutor(max_workers=min(workers, len(items))) as pool:
         futures = {pool.submit(copy_context().run, worker, item): index for index, item in enumerate(items)}
         for future in as_completed(futures):
             index = futures[future]
             try:
-                results[index] = future.result()
+                pending[index] = future.result()
             except BaseException as exc:
-                results[index] = exc
-    if any(item is _MISSING for item in results):
+                pending[index] = exc
+    if any(item is _MISSING for item in pending):
         raise RuntimeError("isolated worker returned no result")
-    return cast(list[B | BaseException], results)
+    return cast(list[B | BaseException], pending)
 
 
-def map_isolated_batches(
+def map_isolated_batches[A, B](
     items: list[A],
     worker: Callable[[A], B],
     *,
@@ -74,7 +72,7 @@ def map_isolated_batches(
             if stopped is not None:
                 results.append(stopped)
                 break
-            pending = items[offset:offset + size]
+            pending = items[offset : offset + size]
             if pool is None:
                 batch = map_isolated(pending, worker, workers=1)
             else:

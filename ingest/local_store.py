@@ -4,81 +4,38 @@ import fcntl
 import heapq
 import json
 import os
-import re
+import stat
 import tempfile
-import time
-from contextlib import contextmanager
-from contextvars import ContextVar
-from dataclasses import dataclass
+from collections.abc import Iterator
+from contextlib import AbstractContextManager
 from datetime import datetime
 from pathlib import Path
-from typing import Any, ContextManager, Iterator, Protocol
+from typing import Any
 
 from ingest.config import Settings
 from ingest.perf import record_storage
+from ingest.store import (
+    DEFAULT_GET_MAX_BYTES,
+    FrameStore,
+    IngestLease,
+    StoragePage,
+    check_operation_deadline,
+    lease_expired,
+    storage_operation_budget,
+    validate_store_path,
+)
 
-_DEFAULT_GET_MAX_BYTES = 16 * 1024 * 1024
-_SAFE_STORE_PATH = re.compile(r"^[A-Za-z0-9._/-]{1,1024}$")
-_OPERATION_DEADLINE: ContextVar[float | None] = ContextVar("storage_operation_deadline", default=None)
-
-
-def validate_store_path(value: str) -> str:
-    if not _SAFE_STORE_PATH.fullmatch(value) or value.startswith("/") or "//" in value:
-        raise ValueError("invalid store path")
-    if any(part in {".", ".."} for part in value.split("/")):
-        raise ValueError("invalid store path")
-    return value
-
-
-def _check_operation_deadline() -> None:
-    deadline = _OPERATION_DEADLINE.get()
-    if deadline is not None and time.monotonic() >= deadline:
-        raise TimeoutError("storage housekeeping deadline reached")
-
-
-@contextmanager
-def storage_operation_budget(seconds: float) -> Iterator[None]:
-    token = _OPERATION_DEADLINE.set(time.monotonic() + seconds)
-    try:
-        yield
-    finally:
-        _OPERATION_DEADLINE.reset(token)
-
-
-@dataclass(frozen=True)
-class StoragePage:
-    paths: list[str]
-    cursor: str | None
-
-
-@dataclass(frozen=True)
-class IngestLease:
-    pathname: str
-    owner: str
-    etag: str | None = None
-
-
-class FrameStore(Protocol):
-    def get_text(self, pathname: str) -> str | None: ...
-    def get_bytes(self, pathname: str, *, max_bytes: int = _DEFAULT_GET_MAX_BYTES) -> bytes | None: ...
-    def put_bytes(self, pathname: str, data: bytes, content_type: str, *, cache_seconds: int, overwrite: bool) -> str: ...
-    def put_json(self, pathname: str, payload: dict[str, Any], *, cache_seconds: int, overwrite: bool) -> str: ...
-    def get_authoritative_json(self, pathname: str) -> dict[str, Any] | None: ...
-    def list_page(self, prefix: str, cursor: str | None = None, limit: int = 250) -> StoragePage: ...
-    def list_prefix(self, prefix: str) -> list[str]: ...
-    def delete(self, pathname: str) -> None: ...
-    def delete_many(self, pathnames: list[str]) -> None: ...
-    def url_for(self, pathname: str) -> str: ...
-    def acquire_lease(self, pathname: str, owner: str, now: datetime, expires_at: datetime) -> IngestLease | None: ...
-    def release_lease(self, lease: IngestLease) -> None: ...
-    def operation_budget(self, seconds: float) -> ContextManager[None]: ...
-
-
-def lease_expired(payload: dict[str, Any], now: datetime) -> bool:
-    try:
-        return datetime.fromisoformat(str(payload["expiresAt"]).replace("Z", "+00:00")) <= now
-    except (KeyError, TypeError, ValueError):
-        return True
+__all__ = [
+    "FrameStore",
+    "IngestLease",
+    "LocalFrameStore",
+    "StoragePage",
+    "lease_expired",
+    "open_cache_store",
+    "open_store",
+    "storage_operation_budget",
+    "validate_store_path",
+]
 
 
 class LocalFrameStore:
@@ -111,7 +68,7 @@ class LocalFrameStore:
         data = self.get_bytes(pathname)
         return None if data is None else data.decode("utf-8")
 
-    def get_bytes(self, pathname: str, *, max_bytes: int = _DEFAULT_GET_MAX_BYTES) -> bytes | None:
+    def get_bytes(self, pathname: str, *, max_bytes: int = DEFAULT_GET_MAX_BYTES) -> bytes | None:
         path = self._path(pathname)
         if not path.is_file():
             record_storage("read")
@@ -123,9 +80,19 @@ class LocalFrameStore:
         record_storage("read", bytes_in=len(data))
         return data
 
+    def exists(self, pathname: str) -> bool:
+        path = self._path(pathname, allow_final_symlink=True)
+        try:
+            info = path.lstat()
+        except FileNotFoundError:
+            record_storage("read")
+            return False
+        record_storage("read")
+        return stat.S_ISREG(info.st_mode)
+
     def put_bytes(self, pathname: str, data: bytes, content_type: str, *, cache_seconds: int, overwrite: bool) -> str:
         del content_type, cache_seconds
-        _check_operation_deadline()
+        check_operation_deadline()
         path = self._path(pathname, allow_final_symlink=overwrite)
         if path.exists() and not overwrite:
             return self.url_for(pathname)
@@ -168,7 +135,7 @@ class LocalFrameStore:
 
         def candidates() -> Iterator[str]:
             for path in root.rglob("*"):
-                _check_operation_deadline()
+                check_operation_deadline()
                 if path.is_file():
                     relative = path.relative_to(self.root).as_posix()
                     if cursor is None or relative > cursor:
@@ -187,7 +154,7 @@ class LocalFrameStore:
         return paths
 
     def delete(self, pathname: str) -> None:
-        _check_operation_deadline()
+        check_operation_deadline()
         path = self._path(pathname)
         existed = path.is_file()
         path.unlink(missing_ok=True)
@@ -209,7 +176,7 @@ class LocalFrameStore:
             "startedAt": now.isoformat().replace("+00:00", "Z"),
             "expiresAt": expires_at.isoformat().replace("+00:00", "Z"),
         }
-        encoded = json.dumps(payload, separators=(",", ":"))
+        encoded = json.dumps(payload, separators=(",", ":")).encode("utf-8")
         guard = self.root / ".lease.guard"
         with guard.open("a+", encoding="utf-8") as guard_handle:
             fcntl.flock(guard_handle, fcntl.LOCK_EX)
@@ -222,7 +189,7 @@ class LocalFrameStore:
                     current = {}
                 if current is not None and not lease_expired(current, now):
                     return None
-                path.write_text(encoded, encoding="utf-8")
+                self.put_bytes(pathname, encoded, "application/json", cache_seconds=60, overwrite=True)
                 return IngestLease(pathname, owner)
             finally:
                 fcntl.flock(guard_handle, fcntl.LOCK_UN)
@@ -242,7 +209,7 @@ class LocalFrameStore:
             finally:
                 fcntl.flock(guard_handle, fcntl.LOCK_UN)
 
-    def operation_budget(self, seconds: float) -> ContextManager[None]:
+    def operation_budget(self, seconds: float) -> AbstractContextManager[None]:
         return storage_operation_budget(seconds)
 
 

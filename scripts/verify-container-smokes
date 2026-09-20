@@ -1,0 +1,7 @@
+#!/bin/sh
+set -eu
+
+cd "$(dirname "$0")/.."
+
+./scripts/verify-container
+./scripts/verify-container-platforms

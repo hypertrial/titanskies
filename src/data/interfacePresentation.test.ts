@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { compactFreshnessLabel, formatCompactTimelineTime, formatExactInterfaceTime, formatMobileTimelineTime, userFacingLoadError } from "./interfacePresentation";
+import { compactFreshnessLabel, formatCompactTimelineTime, formatExactInterfaceTime, formatExplorerTime, formatLonLat, formatMobileTimelineTime, formatObservationAge, userFacingLoadError } from "./interfacePresentation";
 
 describe("interface presentation", () => {
   it("formats live, same-day, future-day, and invalid forecast times compactly", () => {
@@ -14,6 +14,12 @@ describe("interface presentation", () => {
     expect(formatCompactTimelineTime("", reference, false)).toBe("—");
     expect(formatMobileTimelineTime("", reference)).toBe("—");
     expect(formatExactInterfaceTime("")).toBe("Unavailable");
+    expect(formatExplorerTime("")).toBe("—");
+    expect(formatExplorerTime(new Date(2024, 6, 15, 13, 37).toISOString())).toMatch(/Jul 15, 2024 · 1:37 PM \S+$/);
+    expect(formatObservationAge(new Date(reference - 5 * 60_000).toISOString(), reference)).toBe("5 min old");
+    expect(formatObservationAge(new Date(reference - 75 * 60_000).toISOString(), reference)).toBe("1 hr 15 min old");
+    expect(formatLonLat(47.61, -122.33)).toBe("47.61°N, 122.33°W");
+    expect(formatLonLat(-33.87, 151.21)).toBe("33.87°S, 151.21°E");
   });
 
   it("keeps compact freshness explicit across publication states", () => {

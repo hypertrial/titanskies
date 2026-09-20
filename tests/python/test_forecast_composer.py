@@ -1,11 +1,12 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+import io
+from datetime import UTC, datetime, timedelta
+from typing import Any
 
 import numpy as np
 import pytest
 from PIL import Image
-import io
 
 from ingest import forecast_composer
 from ingest.context_contracts import CONTEXT_HEIGHT, CONTEXT_WIDTH
@@ -16,16 +17,24 @@ from ingest.forecast_composer import (
     COVERAGE_POLICY,
     FEATHER_DISTANCE_KM,
     SOURCE_MASK_VERSION,
+    canonical_hours,
+    coastal_coverage_mask,
     compose_best_frame,
     compose_best_run,
     compose_best_values,
     compose_v8_frame,
-    canonical_hours,
-    coastal_coverage_mask,
     hours_needing_png,
 )
 from ingest.forecast_native_cache import GeographicGrid, NativeField
-from ingest.forecast_palette import MASK_COMBINED, MASK_FIREWORK, MASK_HRRR, MASK_NONE, PALETTE_VERSION, colorize_concentration, decode_mask_png
+from ingest.forecast_palette import (
+    MASK_COMBINED,
+    MASK_FIREWORK,
+    MASK_HRRR,
+    MASK_NONE,
+    PALETTE_VERSION,
+    colorize_concentration,
+    decode_mask_png,
+)
 from ingest.forecast_raster import RasterGrid, domain_mask, hrrr_edge_weights
 
 
@@ -38,9 +47,7 @@ def test_v8_tiles_share_exact_edges_and_base_is_every_fourth_global_sample() -> 
         GeographicGrid(64, 40, -145, 72, 100 / 63, 62 / 39),
     )
     base_png, base_mask_png, tiles = compose_v8_frame(native, None)
-    assert [(tile["column"], tile["row"]) for tile in tiles] == [
-        (column, row) for row in range(4) for column in range(4)
-    ]
+    assert [(tile["column"], tile["row"]) for tile in tiles] == [(column, row) for row in range(4) for column in range(4)]
     decoded = [np.asarray(Image.open(io.BytesIO(tile["texturePng"])).convert("RGBA")) for tile in tiles]
     decoded_masks = [decode_mask_png(tile["maskPng"]) for tile in tiles]
     assert all(image.shape == (635, 1024, 4) for image in decoded)
@@ -59,11 +66,11 @@ def test_v8_tiles_share_exact_edges_and_base_is_every_fourth_global_sample() -> 
 
     full = np.empty((2537, 4093, 4), dtype=np.uint8)
     full_mask = np.empty((2537, 4093), dtype=np.uint8)
-    for tile, image, mask in zip(tiles, decoded, decoded_masks):
+    for tile, image, mask in zip(tiles, decoded, decoded_masks, strict=True):
         x0 = tile["column"] * 1023
         y0 = tile["row"] * 634
-        full[y0:y0 + 635, x0:x0 + 1024] = image
-        full_mask[y0:y0 + 635, x0:x0 + 1024] = mask
+        full[y0 : y0 + 635, x0 : x0 + 1024] = image
+        full_mask[y0 : y0 + 635, x0 : x0 + 1024] = mask
     base = np.asarray(Image.open(io.BytesIO(base_png)).convert("RGBA"))
     assert np.array_equal(base, full[::4, ::4])
     assert np.array_equal(decode_mask_png(base_mask_png), full_mask[::4, ::4])
@@ -90,16 +97,16 @@ def _outlook_metadata() -> dict[str, object]:
 
 
 def test_canonical_hours_floor_partial_hour_and_keep_25_frames() -> None:
-    now = datetime(2024, 7, 15, 20, 37, 45, tzinfo=timezone.utc)
+    now = datetime(2024, 7, 15, 20, 37, 45, tzinfo=UTC)
     hours = canonical_hours(now, 24)
     assert len(hours) == 25
-    assert hours[0] == datetime(2024, 7, 15, 20, tzinfo=timezone.utc)
-    assert hours[-1] == datetime(2024, 7, 16, 20, tzinfo=timezone.utc)
+    assert hours[0] == datetime(2024, 7, 15, 20, tzinfo=UTC)
+    assert hours[-1] == datetime(2024, 7, 16, 20, tzinfo=UTC)
 
 
 @pytest.mark.parametrize("source", ["firework", "hrrr"])
 def test_36_hour_outlook_accepts_one_numeric_provider_per_canonical_hour(source: str) -> None:
-    now = datetime(2024, 7, 15, 20, 37, tzinfo=timezone.utc)
+    now = datetime(2024, 7, 15, 20, 37, tzinfo=UTC)
     start = now.replace(minute=0)
     frames = [
         {
@@ -219,7 +226,7 @@ def test_invalid_hrrr_hole_falls_back_to_firework() -> None:
 
 
 @pytest.mark.parametrize("sources", ["both", "firework", "hrrr"])
-def test_coastal_coverage_suppresses_all_source_combinations(sources) -> None:
+def test_coastal_coverage_suppresses_all_source_combinations(sources: Any) -> None:
     coverage = np.ones((CONTEXT_HEIGHT, CONTEXT_WIDTH), dtype=bool)
     coverage[2, 3] = False
     firework = None if sources == "hrrr" else _field(20)
@@ -253,12 +260,15 @@ def test_coastal_coverage_loader_is_binary_sized_cached_and_read_only() -> None:
     assert coastal_coverage_mask() is coverage
 
 
-@pytest.mark.parametrize("values", [
-    np.zeros((2, 2), dtype=np.uint8),
-    np.zeros((CONTEXT_HEIGHT, CONTEXT_WIDTH), dtype=np.uint8),
-    np.full((CONTEXT_HEIGHT, CONTEXT_WIDTH), 127, dtype=np.uint8),
-])
-def test_coastal_coverage_loader_rejects_invalid_assets(tmp_path, monkeypatch, values) -> None:
+@pytest.mark.parametrize(
+    "values",
+    [
+        np.zeros((2, 2), dtype=np.uint8),
+        np.zeros((CONTEXT_HEIGHT, CONTEXT_WIDTH), dtype=np.uint8),
+        np.full((CONTEXT_HEIGHT, CONTEXT_WIDTH), 127, dtype=np.uint8),
+    ],
+)
+def test_coastal_coverage_loader_rejects_invalid_assets(tmp_path: Any, monkeypatch: Any, values: Any) -> None:
     path = tmp_path / "coverage.png"
     Image.fromarray(values, mode="L").save(path)
     monkeypatch.setattr(forecast_composer, "_COVERAGE_MASK_PATH", path)
@@ -270,7 +280,7 @@ def test_coastal_coverage_loader_rejects_invalid_assets(tmp_path, monkeypatch, v
         coastal_coverage_mask.cache_clear()
 
 
-def test_coastal_coverage_loader_rejects_a_missing_asset(tmp_path, monkeypatch) -> None:
+def test_coastal_coverage_loader_rejects_a_missing_asset(tmp_path: Any, monkeypatch: Any) -> None:
     monkeypatch.setattr(forecast_composer, "_COVERAGE_MASK_PATH", tmp_path / "missing.png")
     coastal_coverage_mask.cache_clear()
     try:
@@ -290,7 +300,7 @@ def test_hrrr_only_after_firework_is_absent() -> None:
 
 
 def test_compose_run_uses_hrrr_then_firework_hours() -> None:
-    now = datetime(2024, 7, 15, 20, tzinfo=timezone.utc)
+    now = datetime(2024, 7, 15, 20, tzinfo=UTC)
     inside = domain_mask()
     firework = {
         "modelRun": "2024-07-15T20:00:00Z",
@@ -321,7 +331,7 @@ def test_compose_run_uses_hrrr_then_firework_hours() -> None:
 
 
 def test_compose_run_reuses_unchanged_hours_and_invalidates_policy_changes() -> None:
-    now = datetime(2024, 7, 15, 20, tzinfo=timezone.utc)
+    now = datetime(2024, 7, 15, 20, tzinfo=UTC)
     firework = {
         "modelRun": "2024-07-15T20:00:00Z",
         "units": "µg/m³",
@@ -379,7 +389,7 @@ def test_compose_run_reuses_unchanged_hours_and_invalidates_policy_changes() -> 
 
 
 def test_compose_run_invalidates_source_processing_version_changes() -> None:
-    now = datetime(2024, 7, 15, 20, tzinfo=timezone.utc)
+    now = datetime(2024, 7, 15, 20, tzinfo=UTC)
     firework = {
         "modelRun": "2024-07-15T20:00:00Z",
         "processingVersion": "firework-wcs-ug-v1",
@@ -423,16 +433,18 @@ def test_compose_run_invalidates_source_processing_version_changes() -> None:
 
 
 def test_wms_only_firework_is_never_a_numeric_contributor() -> None:
-    now = datetime(2024, 7, 15, 20, tzinfo=timezone.utc)
+    now = datetime(2024, 7, 15, 20, tzinfo=UTC)
     firework = {
         "modelRun": "2024-07-15T20:00:00Z",
         "processingVersion": "firework-wcs-ug-v2",
-        "frames": [{
-            "validTime": "2024-07-15T20:00:00Z",
-            "modelRun": "2024-07-15T20:00:00Z",
-            "png": b"\x89PNG",
-            "textureUrl": "/firework.png",
-        }],
+        "frames": [
+            {
+                "validTime": "2024-07-15T20:00:00Z",
+                "modelRun": "2024-07-15T20:00:00Z",
+                "png": b"\x89PNG",
+                "textureUrl": "/firework.png",
+            }
+        ],
     }
     best = compose_best_run(firework, None, now)
     assert best["incompleteNumeric"] is True
@@ -442,7 +454,7 @@ def test_wms_only_firework_is_never_a_numeric_contributor() -> None:
 
 
 def test_valueless_firework_is_not_a_best_contributor() -> None:
-    now = datetime(2024, 7, 15, 20, tzinfo=timezone.utc)
+    now = datetime(2024, 7, 15, 20, tzinfo=UTC)
     inside = domain_mask()
     firework = {
         "modelRun": "2024-07-15T20:00:00Z",
@@ -460,7 +472,7 @@ def test_valueless_firework_is_not_a_best_contributor() -> None:
 
 
 def test_incomplete_numeric_best_is_not_reused() -> None:
-    now = datetime(2024, 7, 15, 20, tzinfo=timezone.utc)
+    now = datetime(2024, 7, 15, 20, tzinfo=UTC)
     firework = {
         "modelRun": "2024-07-15T20:00:00Z",
         "processingVersion": "firework-wcs-ug-v1",
@@ -523,12 +535,14 @@ def test_indexed_mask_png_roundtrips_to_the_same_rgba_labels() -> None:
 
 
 @pytest.mark.parametrize("providers", ["both", "firework", "hrrr"])
-def test_sparse_v8_composition_matches_dense_numeric_reference(providers):
+def test_sparse_v8_composition_matches_dense_numeric_reference(providers: Any) -> None:
     from unittest.mock import patch
-    from tests.python.support import fixture_field
-    from ingest.forecast_composer import reproject_native, v8_hrrr_target_coordinates, _v8_tile_grid, _v8_tile_lonlat
-    from ingest.forecast_raster import V8_DETAIL_RASTER_GRID
+
+    from ingest.forecast_composer import _v8_tile_grid, _v8_tile_lonlat, reproject_native, v8_hrrr_target_coordinates
     from ingest.forecast_palette import encode_concentration
+    from ingest.forecast_raster import V8_DETAIL_RASTER_GRID, HrrrGrid
+    from tests.python.support import fixture_field
+
     fw = fixture_field("firework", "run", "valid") if providers != "hrrr" else None
     hr = fixture_field("hrrr", "run", "valid") if providers != "firework" else None
     for field in (fw, hr):
@@ -536,50 +550,66 @@ def test_sparse_v8_composition_matches_dense_numeric_reference(providers):
             field.values[12:15, 20:25] = np.nan
             field.values[20:23, 15:18] = -1
             field.valid[30:33, 30:35] = False
-    xy = v8_hrrr_target_coordinates(hr.grid) if hr else None
+    xy = v8_hrrr_target_coordinates(hr.grid) if hr is not None and isinstance(hr.grid, HrrrGrid) else None
     expected = []
     coverage = coastal_coverage_mask(V8_DETAIL_RASTER_GRID)
     for row in range(4):
         for col in range(4):
             grid, x0, y0 = _v8_tile_grid(col, row)
             f, fv = reproject_native(fw, grid, target_lonlat=_v8_tile_lonlat(x0, y0))
-            tile_xy = tuple(a[y0:y0+635, x0:x0+1024] for a in xy) if xy else None
+            tile_xy = (xy[0][y0 : y0 + 635, x0 : x0 + 1024], xy[1][y0 : y0 + 635, x0 : x0 + 1024]) if xy else None
             h, hv = reproject_native(hr, grid, hrrr_xy=tile_xy)
-            if tile_xy:
+            if tile_xy is not None and hr is not None and isinstance(hr.grid, HrrrGrid):
                 x, y = tile_xy
-                inside = (x >= 0) & (y >= 0) & (x <= hr.grid.nx-1) & (y <= hr.grid.ny-1)
-                distance = min(hr.grid.dx, hr.grid.dy)/1000 * np.minimum.reduce((x, hr.grid.nx-1-x, y, hr.grid.ny-1-y))
-                t = np.clip(distance/FEATHER_DISTANCE_KM, 0, 1)
-                weights = np.where(inside, t*t*(3-2*t), 0).astype(np.float32)
+                inside = (x >= 0) & (y >= 0) & (x <= hr.grid.nx - 1) & (y <= hr.grid.ny - 1)
+                distance = min(hr.grid.dx, hr.grid.dy) / 1000 * np.minimum.reduce((x, hr.grid.nx - 1 - x, y, hr.grid.ny - 1 - y))
+                t = np.clip(distance / FEATHER_DISTANCE_KM, 0, 1)
+                weights = np.where(inside, t * t * (3 - 2 * t), 0).astype(np.float32)
             else:
                 inside, weights = domain_mask(raster_grid=grid), hrrr_edge_weights(raster_grid=grid)
-            expected.append(compose_best_values(f, h, firework_valid=fv, hrrr_valid=hv, inside_hrrr=inside,
-                edge_weight=weights, coverage_mask=coverage[y0:y0+635,x0:x0+1024], raster_grid=grid))
-    calls = []
-    def capture(values, valid, palette_version):
+            expected.append(
+                compose_best_values(
+                    f,
+                    h,
+                    firework_valid=fv,
+                    hrrr_valid=hv,
+                    inside_hrrr=inside,
+                    edge_weight=weights,
+                    coverage_mask=coverage[y0 : y0 + 635, x0 : x0 + 1024],
+                    raster_grid=grid,
+                )
+            )
+    calls: list[int] = []
+
+    def capture(values: Any, valid: Any, palette_version: Any) -> Any:
         i = len(calls)
         if i < 16:
             np.testing.assert_array_equal(values.view(np.uint32), expected[i][0].view(np.uint32))
         calls.append(1)
         return encode_concentration(values, valid, palette_version)
+
     with patch("ingest.forecast_composer.encode_concentration", side_effect=capture):
         _, _, tiles = compose_v8_frame(fw, hr, hrrr_target_xy=xy)
     assert len(calls) == 17
-    for tile, (_, mask) in zip(tiles, expected):
+    for tile, (_, mask) in zip(tiles, expected, strict=True):
         np.testing.assert_array_equal(decode_mask_png(tile["maskPng"]), mask)
     # The completely suppressed tile remains present and fully transparent.
     assert not np.asarray(Image.open(io.BytesIO(tiles[12]["texturePng"])).convert("RGBA"))[..., 3].any()
 
 
-def test_indexed_png_fast_encoding_preserves_indexes_palette_and_alpha():
+def test_indexed_png_fast_encoding_preserves_indexes_palette_and_alpha() -> None:
     from unittest.mock import patch
-    from ingest.forecast_palette import encode_indexes, _COLOR_LUTS, V8_PALETTE_VERSION
+
+    from ingest.forecast_palette import _COLOR_LUTS, V8_PALETTE_VERSION, encode_indexes
+
     lut = _COLOR_LUTS[V8_PALETTE_VERSION]
     indexes = np.arange(len(lut), dtype=np.uint8).reshape(1, -1).repeat(4, axis=0)
     save = Image.Image.save
-    def legacy(image, output, **kwargs):
+
+    def legacy(image: Any, output: Any, **kwargs: Any) -> Any:
         kwargs["optimize"] = True
         return save(image, output, **kwargs)
+
     with patch.object(Image.Image, "save", legacy):
         old = encode_indexes(indexes, lut)
     new = encode_indexes(indexes, lut)

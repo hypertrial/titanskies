@@ -1,16 +1,17 @@
 """Bounded, fail-closed discovery of public objects abandoned by failed runs."""
+
 from __future__ import annotations
 
 import json
 import logging
 import math
 import re
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
-from ingest.local_store import FrameStore, IngestLease
 from ingest.context_contracts import validate_context_manifest
-from ingest.context_publish import CONTEXT_LATEST_PATH, _asset_path_from_url
+from ingest.context_publish import CONTEXT_LATEST_PATH, asset_path_from_url
+from ingest.local_store import FrameStore, IngestLease
 from ingest.perf import current_budget, current_metrics
 
 STATE_PATH = "context/gc-reconcile-v1.json"
@@ -27,7 +28,7 @@ LOGGER = logging.getLogger("titanskies.context.gc")
 
 
 def _now() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 def _count(kind: str, amount: int = 1) -> None:
@@ -37,9 +38,7 @@ def _count(kind: str, amount: int = 1) -> None:
 
 
 def _object_path(path: Any) -> bool:
-    return isinstance(path, str) and (
-        _asset_path_from_url(path) == path or bool(_MANIFEST_PATH.fullmatch(path))
-    )
+    return isinstance(path, str) and (asset_path_from_url(path) == path or bool(_MANIFEST_PATH.fullmatch(path)))
 
 
 def _protected(manifest: dict[str, Any], manifest_path: str, previous: dict[str, Any] | None, previous_path: str | None) -> set[str]:
@@ -60,9 +59,10 @@ def _protected(manifest: dict[str, Any], manifest_path: str, previous: dict[str,
             for nested in value:
                 collect(nested)
         elif isinstance(value, str):
-            path = _asset_path_from_url(value)
+            path = asset_path_from_url(value)
             if path:
                 protected.add(path)
+
     collect(manifest)
     collect(previous)
     return protected
@@ -74,13 +74,23 @@ def _state(value: dict[str, Any] | None, now: float) -> dict[str, Any]:
     if value.get("version") != 1 or type(value.get("nextPrefix")) is not int or value["nextPrefix"] not in (0, 1):
         raise ValueError("invalid reconciliation version or prefix")
     cursors, sweeps, pending = value.get("cursors"), value.get("lastSweep"), value.get("pending")
-    if not isinstance(cursors, list) or len(cursors) != 2 or any(c is not None and (not isinstance(c, str) or not c or len(c) > 8192) for c in cursors):
+    if (
+        not isinstance(cursors, list)
+        or len(cursors) != 2
+        or any(c is not None and (not isinstance(c, str) or not c or len(c) > 8192) for c in cursors)
+    ):
         raise ValueError("invalid reconciliation cursors")
+
     def timestamp(v: Any) -> bool:
         return type(v) in (float, int) and math.isfinite(v) and 0 <= v <= now
+
     if not isinstance(sweeps, list) or len(sweeps) != 2 or any(v is not None and not timestamp(v) for v in sweeps):
         raise ValueError("invalid reconciliation sweep times")
-    if not isinstance(pending, dict) or len(pending) > MAX_PENDING or any(not _object_path(p) or not timestamp(t) for p, t in pending.items()):
+    if (
+        not isinstance(pending, dict)
+        or len(pending) > MAX_PENDING
+        or any(not _object_path(p) or not timestamp(t) for p, t in pending.items())
+    ):
         raise ValueError("invalid reconciliation candidates")
     return value
 
@@ -122,12 +132,19 @@ def reconcile_orphans(
             # Reset grace for anything that became referenced before proceeding.
             store.put_json(STATE_PATH, state, cache_seconds=0, overwrite=True)
             grace_seconds = retention_hours * 60 * 60
-            eligible = sorted((p for p, seen in pending.items() if now - seen >= grace_seconds), key=lambda p: (pending[p], p))[:DELETE_BATCH]
+            eligible = sorted((p for p, seen in pending.items() if now - seen >= grace_seconds), key=lambda p: (pending[p], p))[
+                :DELETE_BATCH
+            ]
             if eligible:
                 actual_pointer = store.get_authoritative_json(CONTEXT_LATEST_PATH)
                 actual_lease = store.get_authoritative_json(lease.pathname)
                 expires = datetime.fromisoformat(str((actual_lease or {}).get("expiresAt", "")).replace("Z", "+00:00"))
-                if actual_pointer != pointer or not actual_lease or actual_lease.get("owner") != lease.owner or expires.timestamp() - _now().timestamp() < OPERATION_SECONDS + FINAL_RESERVE_SECONDS:
+                if (
+                    actual_pointer != pointer
+                    or not actual_lease
+                    or actual_lease.get("owner") != lease.owner
+                    or expires.timestamp() - _now().timestamp() < OPERATION_SECONDS + FINAL_RESERVE_SECONDS
+                ):
                     _count("deferred")
                     return
                 store.delete_many(eligible)
@@ -149,9 +166,13 @@ def reconcile_orphans(
                     state["cursors"][index] = None
                     store.put_json(STATE_PATH, state, cache_seconds=0, overwrite=True)
                     raise
-                if len(page.paths) > min(PAGE_SIZE, available) or any(not _object_path(p) or not p.startswith(PREFIXES[index] + "/") for p in page.paths):
+                if len(page.paths) > min(PAGE_SIZE, available) or any(
+                    not _object_path(p) or not p.startswith(PREFIXES[index] + "/") for p in page.paths
+                ):
                     raise ValueError("unsafe reconciliation listing")
-                if page.cursor is not None and (not isinstance(page.cursor, str) or not page.cursor or len(page.cursor) > 8192 or page.cursor == cursor):
+                if page.cursor is not None and (
+                    not isinstance(page.cursor, str) or not page.cursor or len(page.cursor) > 8192 or page.cursor == cursor
+                ):
                     raise ValueError("repeated reconciliation cursor")
                 _count("scanned", len(page.paths))
                 for path in page.paths:

@@ -1,0 +1,14 @@
+#!/bin/sh
+set -eu
+
+cd "$(dirname "$0")/.."
+
+npm run audit:prod
+npm run check:public
+command -v gitleaks >/dev/null 2>&1 || { echo "gitleaks is required" >&2; exit 1; }
+gitleaks git --redact --log-opts="--all"
+npm run lint
+npm run typecheck
+npm test
+./scripts/run_python.sh -m mypy
+./scripts/run_python.sh -m pytest tests/python -q

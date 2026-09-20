@@ -4,16 +4,15 @@ import hashlib
 import json
 import logging
 import re
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from html.parser import HTMLParser
 from typing import Any
-from urllib.parse import urlparse
 from zoneinfo import ZoneInfo
 
 from ingest.config import Settings
 from ingest.context_contracts import in_monitor_bounds, iso_utc
-from ingest.http import fetch
+from ingest.http import clean_text, fetch, require_host
 from ingest.http_pool import map_isolated
 from ingest.sources.aqi import AQI_METHOD_NOWCAST, aqi_category, nowcast_aqi
 
@@ -147,7 +146,7 @@ def parse_sinaica_hours(payload: Any, zone: ZoneInfo, now: datetime) -> dict[dat
         if not value.is_finite() or value < 0 or hour < 0 or hour > 23:
             continue
         local = datetime(day.year, day.month, day.day, hour, tzinfo=zone)
-        observed = local.astimezone(timezone.utc).replace(minute=0, second=0, microsecond=0)
+        observed = local.astimezone(UTC).replace(minute=0, second=0, microsecond=0)
         if observed > horizon:
             continue
         hours[observed] = value
@@ -162,7 +161,7 @@ def fetch_sinaica(
 ) -> list[dict[str, Any]]:
     if not settings.sinaica_enabled:
         raise PermissionError("SINAICA is disabled")
-    _require_host(settings.sinaica_base_url, SINAICA_HOSTS)
+    require_host(settings.sinaica_base_url, SINAICA_HOSTS)
     html = fetch(
         settings.sinaica_stations_url,
         hosts=SINAICA_HOSTS,
@@ -229,7 +228,10 @@ def _station_metadata(settings: Settings, identifier: str, fallback_name: str) -
     except (RuntimeError, ValueError, json.JSONDecodeError):
         return None
     names = {str(item.get("id") or item.get("nombre") or "").upper() for item in parameters} if isinstance(parameters, list) else set()
-    if not any(name.replace(" ", "") in {"PM2.5", "PM25", "PARTÍCULAS MENORES A 2.5 MICRAS", "PARTICULAS MENORES A 2.5 MICRAS"} or "2.5" in name for name in names):
+    if not any(
+        name.replace(" ", "") in {"PM2.5", "PM25", "PARTÍCULAS MENORES A 2.5 MICRAS", "PARTICULAS MENORES A 2.5 MICRAS"} or "2.5" in name
+        for name in names
+    ):
         return None
     try:
         meta_body = fetch(
@@ -260,8 +262,8 @@ def _station_metadata(settings: Settings, identifier: str, fallback_name: str) -
     zone = sinaica_timezone(state, municipality, lat, lon)
     if zone is None:
         return None
-    agency = _clean(meta.get("redNom") or meta.get("SMCANom") or "INECC/SINAICA")
-    name = _clean(meta.get("nombre") or fallback_name or identifier)
+    agency = clean_text(meta.get("redNom") or meta.get("SMCANom") or "INECC/SINAICA")
+    name = clean_text(meta.get("nombre") or fallback_name or identifier)
     return {"id": identifier, "name": name, "agency": agency, "lat": lat, "lon": lon, "zone": zone}
 
 
@@ -363,7 +365,13 @@ def _load_metadata_cache(store: Any, signature: str, settings: Settings, now: da
         cached_at = datetime.fromisoformat(str(payload["cachedAt"]).replace("Z", "+00:00"))
         if now - cached_at > METADATA_TTL:
             return None
-        stations = [station for item in payload.get("stations") or [] if isinstance(item, dict) for station in [_deserialize_station(item)] if station]
+        stations = [
+            station
+            for item in payload.get("stations") or []
+            if isinstance(item, dict)
+            for station in [_deserialize_station(item)]
+            if station
+        ]
         if len(stations) < settings.sinaica_min_stations:
             return None
         return stations
@@ -389,15 +397,7 @@ def _store_metadata_cache(store: Any, signature: str, stations: list[dict[str, A
         LOGGER.warning("SINAICA metadata cache write failed", exc_info=True)
 
 
-def _require_host(url: str, hosts: frozenset[str]) -> None:
-    host = urlparse(url).hostname or ""
-    if host not in hosts:
-        raise ValueError(f"blocked SINAICA host {host}")
-
-
 def _normalize(value: str) -> str:
-    return " ".join(value.lower().replace("á", "a").replace("é", "e").replace("í", "i").replace("ó", "o").replace("ú", "u").replace("ü", "u").split())
-
-
-def _clean(value: Any, limit: int = 120) -> str:
-    return " ".join(str(value).split())[:limit]
+    return " ".join(
+        value.lower().replace("á", "a").replace("é", "e").replace("í", "i").replace("ó", "o").replace("ú", "u").replace("ü", "u").split()
+    )

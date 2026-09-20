@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { advancePlaybackPosition, livePosition, MAX_PLAYBACK_TICK_MS, nearestTimelineIndex, playbackAt, PLAYBACK_RATE, positionForIndex, positionForTime, residentIndices, steppedPosition, timelineSpanMs } from "./timeline";
+import { advancePlaybackPosition, livePosition, MAX_PLAYBACK_TICK_MS, nearestTimelineIndex, playbackAt, PLAYBACK_RATE, positionForIndex, positionForTime, residentIndices, steppedPosition, timelineEntry, timelineSpanMs } from "./timeline";
 
 const entry = (scanId: string, hour: string) => ({
   scanId,
@@ -8,6 +8,15 @@ const entry = (scanId: string, hour: string) => ({
 });
 
 describe("timeline", () => {
+  it("builds a forecast timeline entry from a frame and index", () => {
+    expect(timelineEntry({ validTime: "2024-07-15T18:00:00Z", textureUrl: "/frames/a.webp" }, 3)).toEqual({
+      scanId: "forecast-3",
+      observationStart: "2024-07-15T18:00:00Z",
+      manifestUrl: "/frames/a.webp",
+    });
+    expect(timelineEntry({ validTime: "2024-07-15T19:00:00Z" }, 0).manifestUrl).toBe("");
+  });
+
   it("interpolates across short gaps and holds overnight", () => {
     const shortGap = [entry("a", "18"), entry("b", "19")];
     const play = playbackAt(shortGap, 30 * 60 * 1000);

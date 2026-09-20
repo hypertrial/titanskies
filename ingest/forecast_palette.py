@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import io
-import zlib
 import json
+import zlib
 from pathlib import Path
 from typing import Any
 
@@ -27,11 +27,18 @@ MASK_LABELS = {MASK_NONE: "none", MASK_FIREWORK: "firework", MASK_HRRR: "hrrr", 
 LUT_STEPS_PER_INTERVAL = int(_PALETTE.get("lutStepsPerInterval", 24))
 
 
+def _rgba4(values: Any) -> tuple[int, int, int, int]:
+    channels = tuple(int(value) for value in values)
+    if len(channels) != 4:
+        raise ValueError("palette RGBA must have four channels")
+    return channels[0], channels[1], channels[2], channels[3]
+
+
 def _threshold_colors(palette: dict[str, Any]) -> list[tuple[float, float, tuple[int, int, int, int], tuple[int, int, int, int]]]:
     rows = []
     for item in palette["thresholds"]:
-        start = tuple(int(value) for value in item["rgba"])
-        end = tuple(int(value) for value in item.get("rgbaEnd", item["rgba"]))
+        start = _rgba4(item["rgba"])
+        end = _rgba4(item.get("rgbaEnd", item["rgba"]))
         rows.append((float(item["min"]), float(item["max"]), start, end))
     return rows
 
@@ -47,7 +54,9 @@ def display_palette(version: str = PALETTE_VERSION) -> dict[str, Any]:
         raise ValueError("unsupported smoke display palette") from exc
 
 
-def display_threshold_colors(version: str = PALETTE_VERSION) -> list[tuple[float, float, tuple[int, int, int, int], tuple[int, int, int, int]]]:
+def display_threshold_colors(
+    version: str = PALETTE_VERSION,
+) -> list[tuple[float, float, tuple[int, int, int, int], tuple[int, int, int, int]]]:
     return _threshold_colors(display_palette(version))
 
 
@@ -57,12 +66,12 @@ def texture_scale_max(version: str = PALETTE_VERSION) -> float:
 
 def mask_rgba(code: int) -> tuple[int, int, int, int]:
     label = MASK_LABELS[code]
-    return tuple(int(value) for value in _PALETTE["mask"][label])
+    return _rgba4(_PALETTE["mask"][label])
 
 
 def _lerp(start: tuple[int, int, int, int], end: tuple[int, int, int, int], t: float) -> tuple[int, int, int, int]:
     t = min(1.0, max(0.0, float(t)))
-    return tuple(int(round(s + (e - s) * t)) for s, e in zip(start, end))
+    return _rgba4(int(round(s + (e - s) * t)) for s, e in zip(start, end, strict=True))
 
 
 def _interval_steps(start: tuple[int, int, int, int], end: tuple[int, int, int, int], steps: int = LUT_STEPS_PER_INTERVAL) -> int:
@@ -106,18 +115,6 @@ _LUT_RGB = np.array([color[:3] for color in _COLOR_LUT], dtype=np.uint8)
 _LUT_ALPHA = np.array([color[3] for color in _COLOR_LUT], dtype=np.uint8)
 
 
-def interpolate_color(value: float, palette_version: str = PALETTE_VERSION) -> tuple[int, int, int, int]:
-    if not np.isfinite(value) or value < 0:
-        return (0, 0, 0, 0)
-    return _COLOR_LUTS[palette_version][int(concentration_index(np.array([value], dtype=np.float32), np.array([True]), palette_version)[0])]
-
-
-def official_interpolate_color(value: float) -> tuple[int, int, int, int]:
-    if not np.isfinite(value) or value < 0:
-        return (0, 0, 0, 0)
-    return _OFFICIAL_COLOR_LUT[int(official_concentration_index(np.array([value], dtype=np.float32), np.array([True]))[0])]
-
-
 def concentration_index(values: np.ndarray, valid: np.ndarray, palette_version: str = PALETTE_VERSION) -> np.ndarray:
     indexes = np.zeros(values.shape, dtype=np.uint8)
     finite = valid & np.isfinite(values) & (values >= 0)
@@ -154,21 +151,11 @@ def colorize_concentration(values: np.ndarray, valid: np.ndarray, palette_versio
     return rgba
 
 
-def official_colorize_concentration(values: np.ndarray, valid: np.ndarray) -> np.ndarray:
-    indexes = official_concentration_index(values, valid)
-    lut_rgb = np.array([color[:3] for color in _OFFICIAL_COLOR_LUT], dtype=np.uint8)
-    lut_alpha = np.array([color[3] for color in _OFFICIAL_COLOR_LUT], dtype=np.uint8)
-    rgba = np.zeros(values.shape + (4,), dtype=np.uint8)
-    rgba[..., :3] = lut_rgb[indexes]
-    rgba[..., 3] = lut_alpha[indexes]
-    return rgba
-
-
 def encode_indexes(indexes: np.ndarray, lut: list[tuple[int, int, int, int]] = _COLOR_LUT) -> bytes:
     image = Image.fromarray(np.asarray(indexes, dtype=np.uint8), mode="P")
     palette_bytes = bytearray(768)
     for index, color in enumerate(lut):
-        palette_bytes[index * 3:index * 3 + 3] = color[:3]
+        palette_bytes[index * 3 : index * 3 + 3] = color[:3]
     image.putpalette(bytes(palette_bytes))
     image.info["transparency"] = bytes(color[3] for color in lut)
     output = io.BytesIO()
@@ -241,7 +228,7 @@ def encode_mask_png(codes: np.ndarray, *, legacy: bool = False) -> bytes:
     palette_bytes = bytearray(768)
     for code in MASK_LABELS:
         color = mask_rgba(code)
-        palette_bytes[code * 3:code * 3 + 3] = color[:3]
+        palette_bytes[code * 3 : code * 3 + 3] = color[:3]
     image.putpalette(bytes(palette_bytes))
     image.info["transparency"] = bytes(mask_rgba(code)[3] for code in MASK_LABELS)
     output = io.BytesIO()
@@ -279,46 +266,3 @@ def official_legend_png(width: int = 360, height: int = 12) -> bytes:
     indexes = official_concentration_index(ramp, valid)
     image = np.broadcast_to(indexes[None, :], (height, width)).copy()
     return encode_indexes(image, _OFFICIAL_COLOR_LUT)
-
-
-def firework_sld(layer: str) -> str:
-    entries = []
-    official_steps = int(_OFFICIAL_PALETTE.get("lutStepsPerInterval", 24))
-    for low, high, start, end in threshold_colors():
-        steps = _interval_steps(start, end, official_steps)
-        if steps <= 1:
-            hex_color = f"#{start[0]:02x}{start[1]:02x}{start[2]:02x}"
-            opacity = f"{start[3] / 255:.3f}"
-            entries.append(
-                f'<ColorMapEntry color="{hex_color}" quantity="{low * KG_PER_UG:g}" opacity="{opacity}"/>'
-            )
-            continue
-        for index in range(steps):
-            t = index / (steps - 1)
-            color = _lerp(start, end, t)
-            quantity = (low + t * (high - low)) * KG_PER_UG
-            hex_color = f"#{color[0]:02x}{color[1]:02x}{color[2]:02x}"
-            opacity = f"{color[3] / 255:.3f}"
-            entries.append(
-                f'<ColorMapEntry color="{hex_color}" quantity="{quantity:g}" opacity="{opacity}"/>'
-            )
-    body = "\n              ".join(entries)
-    return f"""<?xml version="1.0" encoding="UTF-8"?>
-<StyledLayerDescriptor version="1.0.0" xmlns="http://www.opengis.net/sld" xmlns:ogc="http://www.opengis.net/ogc" xmlns:xlink="http://www.w3.org/1999/xlink">
-  <NamedLayer>
-    <Name>{layer}</Name>
-    <UserStyle>
-      <Title>ECCC FireWork FW-SFC-PM-DIFF</Title>
-      <FeatureTypeStyle>
-        <Rule>
-          <RasterSymbolizer>
-            <ColorMap type="intervals">
-              {body}
-            </ColorMap>
-          </RasterSymbolizer>
-        </Rule>
-      </FeatureTypeStyle>
-    </UserStyle>
-  </NamedLayer>
-</StyledLayerDescriptor>
-"""

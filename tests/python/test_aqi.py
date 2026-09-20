@@ -1,12 +1,13 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from collections.abc import Sequence
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 from ingest.sources.aqi import aqi_category, clock_hours, nowcast_aqi, nowcast_pm25, pm25_aqi
 
 
-def _dec(values: list[float | None]) -> list[Decimal | None]:
+def _dec(values: Sequence[float | int | None]) -> list[Decimal | None]:
     return [None if value is None else Decimal(str(value)) for value in values]
 
 
@@ -53,7 +54,7 @@ def test_pm25_breakpoints_and_beyond_aqi() -> None:
 
 
 def test_clock_hours_keep_empty_slots() -> None:
-    end = datetime(2026, 8, 13, 18, tzinfo=timezone.utc)
+    end = datetime(2026, 8, 13, 18, tzinfo=UTC)
     series = {
         end: Decimal("10"),
         end - timedelta(hours=2): Decimal("30"),

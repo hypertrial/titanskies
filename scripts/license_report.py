@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
-import importlib.metadata
 import fnmatch
+import importlib.metadata
 import json
 import tomllib
 from pathlib import Path
@@ -15,9 +15,22 @@ NOTICES = ROOT / "artifacts/THIRD_PARTY_NOTICES.md"
 OVERRIDES = json.loads((ROOT / "shared/license-overrides.json").read_text(encoding="utf-8"))["packages"]
 ASSET_REGISTRY = json.loads((ROOT / "shared/bundled-assets.json").read_text(encoding="utf-8"))
 OPEN_LICENSES = {
-    "0BSD", "Apache-2.0", "BSD-2-Clause", "BSD-3-Clause", "BlueOak-1.0.0",
-    "CC-BY-4.0", "CC0-1.0", "ISC", "LGPL-3.0-or-later", "MIT", "MIT-0",
-    "MIT-CMU", "MPL-2.0", "PSF-2.0", "Python-2.0", "Zlib",
+    "0BSD",
+    "Apache-2.0",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "BlueOak-1.0.0",
+    "CC-BY-4.0",
+    "CC0-1.0",
+    "ISC",
+    "LGPL-3.0-or-later",
+    "MIT",
+    "MIT-0",
+    "MIT-CMU",
+    "MPL-2.0",
+    "PSF-2.0",
+    "Python-2.0",
+    "Zlib",
 }
 LICENSE_ALIASES = {
     "Apache License Version 2.0": "Apache-2.0",
@@ -48,23 +61,26 @@ for location, package in lock["packages"].items():
         failures.append(f"npm:{name}:{license_name}")
 
 installed = {
-    (distribution.metadata.get("Name") or "").lower().replace("_", "-"): distribution
-    for distribution in importlib.metadata.distributions()
+    (distribution.metadata.get("Name") or "").lower().replace("_", "-"): distribution for distribution in importlib.metadata.distributions()
 }
 python = []
 uv_lock = tomllib.loads((ROOT / "uv.lock").read_text(encoding="utf-8"))
-locked = sorted({
-    (item["name"], item["version"])
-    for item in uv_lock.get("package", [])
-    if isinstance(item, dict) and isinstance(item.get("source"), dict) and "registry" in item["source"]
-})
+locked = sorted(
+    {
+        (item["name"], item["version"])
+        for item in uv_lock.get("package", [])
+        if isinstance(item, dict) and isinstance(item.get("source"), dict) and "registry" in item["source"]
+    }
+)
 for name, version in locked:
     normalized = name.lower().replace("_", "-")
     distribution = installed.get(normalized)
-    license_name = OVERRIDES.get(normalized, {}).get("license") \
-        or (distribution.metadata.get("License-Expression") if distribution else None) \
-        or (distribution.metadata.get("License") if distribution else None) \
+    license_name = (
+        OVERRIDES.get(normalized, {}).get("license")
+        or (distribution.metadata.get("License-Expression") if distribution else None)
+        or (distribution.metadata.get("License") if distribution else None)
         or "UNKNOWN"
+    )
     python.append({"name": name, "version": version, "license": license_name})
     if not accepted(license_name):
         failures.append(f"python:{name}:{license_name}")
@@ -79,10 +95,7 @@ for asset in assets:
     if not accepted(str(asset.get("license") or "")):
         failures.append(f"asset:{asset.get('origin', 'unknown')}:{asset.get('license', 'UNKNOWN')}")
 static_files = [
-    path.relative_to(ROOT).as_posix()
-    for directory in (ROOT / "public", ROOT / "shared")
-    for path in directory.rglob("*")
-    if path.is_file()
+    path.relative_to(ROOT).as_posix() for directory in (ROOT / "public", ROOT / "shared") for path in directory.rglob("*") if path.is_file()
 ]
 for extra in (
     ROOT / "app/icon.png",
@@ -96,13 +109,17 @@ for pathname in static_files:
         failures.append(f"asset:{pathname}:UNREGISTERED")
 
 OUT.parent.mkdir(parents=True, exist_ok=True)
-OUT.write_text(json.dumps({"schemaVersion": 1, "npm": npm, "python": python, "assets": assets, "failures": failures}, indent=2) + "\n", encoding="utf-8")
+OUT.write_text(
+    json.dumps({"schemaVersion": 1, "npm": npm, "python": python, "assets": assets, "failures": failures}, indent=2) + "\n",
+    encoding="utf-8",
+)
 if failures:
     raise SystemExit("proprietary or unknown licenses: " + ", ".join(failures))
 notice_lines = [
     "# TitanSkies release dependency notices",
     "",
-    "This generated inventory covers the dependencies locked for this release. See each package distribution for its complete license text.",
+    "This generated inventory covers the dependencies locked for this release. "
+    "See each package distribution for its complete license text.",
     "",
     "## JavaScript packages",
     "",

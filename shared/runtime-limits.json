@@ -1,0 +1,7 @@
+{
+  "watchSeconds": {
+    "default": 900,
+    "min": 60,
+    "max": 3600
+  }
+}

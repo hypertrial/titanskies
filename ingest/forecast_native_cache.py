@@ -13,9 +13,9 @@ from typing import Any
 
 import numpy as np
 
-from ingest.local_store import FrameStore
 from ingest.context_contracts import CONTEXT_BOUNDS, CONTEXT_FIELD_BUDGET_BYTES
 from ingest.forecast_raster import HrrrGrid
+from ingest.local_store import FrameStore
 from ingest.perf import current_metrics
 
 NATIVE_FIELD_CACHE_VERSION = "native-field-cache-v1"
@@ -82,11 +82,14 @@ def _decode_grid(payload: Any, width: int, height: int) -> GeographicGrid | Hrrr
         east = grid.lon0 + (grid.width - 1) * grid.dx
         south = grid.lat0 - (grid.height - 1) * grid.dy
         if (
-            grid.dx > 5 or grid.dy > 5
+            grid.dx > 5
+            or grid.dy > 5
             or not (-180.5 <= grid.lon0 <= 180.5 and -180.5 <= east <= 180.5)
             or not (-90.5 <= south <= 90.5 and -90.5 <= grid.lat0 <= 90.5)
-            or east < CONTEXT_BOUNDS["west"] or grid.lon0 > CONTEXT_BOUNDS["east"]
-            or grid.lat0 < CONTEXT_BOUNDS["south"] or south > CONTEXT_BOUNDS["north"]
+            or east < CONTEXT_BOUNDS["west"]
+            or grid.lon0 > CONTEXT_BOUNDS["east"]
+            or grid.lat0 < CONTEXT_BOUNDS["south"]
+            or south > CONTEXT_BOUNDS["north"]
         ):
             raise ValueError("native geographic grid bounds are invalid")
     if isinstance(grid, HrrrGrid) and (
@@ -166,7 +169,7 @@ def decode_native_field(
     if header_len < 2 or header_len > _HEADER_MAX_BYTES or 8 + header_len > len(data):
         raise ValueError("native field header is invalid")
     try:
-        header = json.loads(data[8:8 + header_len])
+        header = json.loads(data[8 : 8 + header_len])
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise ValueError("native field header is invalid") from exc
     expected = (NATIVE_FIELD_CACHE_VERSION, model_id, model_run, valid_time, processing_version, "µg/m³")
@@ -177,7 +180,7 @@ def decode_native_field(
     if width < 2 or height < 2 or width * height > 2_100_000:
         raise ValueError("native field dimensions are invalid")
     grid = _decode_grid(header.get("grid"), width, height)
-    payload = data[8 + header_len:]
+    payload = data[8 + header_len :]
     if hashlib.sha256(payload).hexdigest() != header.get("payloadSha256"):
         raise ValueError("native field payload hash mismatch")
     raw_bytes = int(header.get("rawBytes") or 0)
@@ -195,7 +198,11 @@ def decode_native_field(
         raise ValueError("native field payload size mismatch")
     bit_count = width * height
     mask_bytes = (bit_count + 7) // 8
-    valid = np.unpackbits(np.frombuffer(raw[:mask_bytes], dtype=np.uint8), bitorder="little", count=bit_count).astype(bool).reshape(height, width)
+    valid = (
+        np.unpackbits(np.frombuffer(raw[:mask_bytes], dtype=np.uint8), bitorder="little", count=bit_count)
+        .astype(bool)
+        .reshape(height, width)
+    )
     valid_count = int(header.get("validCount") or 0)
     packed_values = raw[mask_bytes:]
     if valid_count != int(valid.sum()) or len(packed_values) != valid_count * 4:
@@ -230,7 +237,9 @@ class NativeFieldCache:
             root = {}
         entries = root.get("entries", {}) if isinstance(root, dict) else {}
         if isinstance(entries, dict):
-            self.index = {key: path for key, path in entries.items() if isinstance(key, str) and isinstance(path, str) and _FIELD_PATH.fullmatch(path)}
+            self.index = {
+                key: path for key, path in entries.items() if isinstance(key, str) and isinstance(path, str) and _FIELD_PATH.fullmatch(path)
+            }
 
     def close(self) -> None:
         with self._lock:
@@ -297,10 +306,13 @@ class NativeFieldCache:
             if metrics:
                 metrics.increment("native_field_cache_misses")
             return None
+
         def validate(data: bytes | None) -> NativeField:
             if not data or hashlib.sha256(data).hexdigest()[:20] != path.split("/")[-2]:
                 raise ValueError
-            return decode_native_field(data, model_id=model_id, model_run=model_run, valid_time=valid_time, processing_version=processing_version)
+            return decode_native_field(
+                data, model_id=model_id, model_run=model_run, valid_time=valid_time, processing_version=processing_version
+            )
 
         try:
             data = self._read_spooled(path)
@@ -343,7 +355,9 @@ class NativeFieldCache:
         return field
 
     def put(self, field: NativeField, *, model_id: str, model_run: str, valid_time: str, processing_version: str) -> str:
-        data = encode_native_field(field, model_id=model_id, model_run=model_run, valid_time=valid_time, processing_version=processing_version)
+        data = encode_native_field(
+            field, model_id=model_id, model_run=model_run, valid_time=valid_time, processing_version=processing_version
+        )
         digest = hashlib.sha256(data).hexdigest()[:20]
         path = f"{NATIVE_FIELD_CACHE_PREFIX}/{digest}/field.bin"
         # A validated refetch must repair corrupt bytes already at this digest.

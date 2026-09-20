@@ -1,16 +1,17 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
-import hashlib
 import argparse
+import hashlib
 import heapq
 import io
 import json
 import math
 import urllib.request
 import zipfile
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 
 import numpy as np
 from PIL import Image, ImageDraw, ImageEnhance, ImageOps
@@ -204,7 +205,9 @@ def _clean_line(line: list[list[float]]) -> list[list[float]]:
     return [[round(float(point[0]), 4), round(float(point[1]), 4)] for point in line]
 
 
-def _clip_segment(start: list[float], end: list[float], bounds: tuple[float, float, float, float] = DISPLAY_BOUNDS) -> tuple[list[float], list[float]] | None:
+def _clip_segment(
+    start: list[float], end: list[float], bounds: tuple[float, float, float, float] = DISPLAY_BOUNDS
+) -> tuple[list[float], list[float]] | None:
     west, south, east, north = bounds
     x0, y0 = float(start[0]), float(start[1])
     dx, dy = float(end[0]) - x0, float(end[1]) - y0
@@ -305,10 +308,7 @@ def _cities(payload: dict[str, Any]) -> list[dict[str, Any]]:
 
 def _point_in_display_bounds(lon: float, lat: float) -> bool:
     point = [lon, lat]
-    return bool(
-        _clip_segment(point, point, DISPLAY_BOUNDS)
-        or _clip_segment(point, point, ALEUTIAN_BOUNDS)
-    )
+    return bool(_clip_segment(point, point, DISPLAY_BOUNDS) or _clip_segment(point, point, ALEUTIAN_BOUNDS))
 
 
 def _detail_city_tier(min_zoom: float) -> str:
@@ -359,17 +359,19 @@ def _landmarks() -> list[dict[str, Any]]:
         ids.add(qid)
         country_ranks[country].add(rank)
         category_counts[(country, category)] = category_counts.get((country, category), 0) + 1
-        result.append({
-            "id": f"wikidata:{qid}",
-            "name": str(record["name"]),
-            "lon": round(float(lon), 6),
-            "lat": round(float(lat), 6),
-            "country": country,
-            "kind": "landmark",
-            "category": category,
-            "tier": _landmark_tier(rank),
-            "_sort": (rank, qid),
-        })
+        result.append(
+            {
+                "id": f"wikidata:{qid}",
+                "name": str(record["name"]),
+                "lon": round(float(lon), 6),
+                "lat": round(float(lat), 6),
+                "country": country,
+                "kind": "landmark",
+                "category": category,
+                "tier": _landmark_tier(rank),
+                "_sort": (rank, qid),
+            }
+        )
     for country in COUNTRY_CODES:
         if country_ranks[country] != set(range(1, 21)):
             raise RuntimeError(f"landmark ranks must be 1 through 20 for {country}")
@@ -420,17 +422,19 @@ def _map_labels(payload: dict[str, Any]) -> list[dict[str, Any]]:
         min_zoom = float(min_zoom_value if min_zoom_value is not None else 99)
         scalerank = int(scalerank_value if scalerank_value is not None else 99)
         pop_max = int(properties.get("pop_max") or 0)
-        candidates.append({
-            "id": f"ne:{ne_id}",
-            "name": name,
-            "lon": round(float(lon), 4),
-            "lat": round(float(lat), 4),
-            "country": country,
-            "kind": "city",
-            "tier": tier,
-            "_class": curated_order,
-            "_sort": (scalerank, min_zoom, -pop_max, f"ne:{ne_id}"),
-        })
+        candidates.append(
+            {
+                "id": f"ne:{ne_id}",
+                "name": name,
+                "lon": round(float(lon), 4),
+                "lat": round(float(lat), 4),
+                "country": country,
+                "kind": "city",
+                "tier": tier,
+                "_class": curated_order,
+                "_sort": (scalerank, min_zoom, -pop_max, f"ne:{ne_id}"),
+            }
+        )
     missing = [key for key in allowlist if key not in curated_seen]
     if missing:
         raise RuntimeError(f"curated cities missing from map labels: {missing}")
@@ -443,12 +447,14 @@ def _map_labels(payload: dict[str, Any]) -> list[dict[str, Any]]:
         candidates.append(landmark)
 
     tier_order = {tier: index for index, tier in enumerate(MAP_LABEL_TIERS)}
-    candidates.sort(key=lambda label: (
-        tier_order[label["tier"]],
-        label["_class"],
-        *label["_sort"],
-        label["id"],
-    ))
+    candidates.sort(
+        key=lambda label: (
+            tier_order[label["tier"]],
+            label["_class"],
+            *label["_sort"],
+            label["id"],
+        )
+    )
     result: list[dict[str, Any]] = []
     for collision_rank, label in enumerate(candidates):
         public_label = {key: value for key, value in label.items() if not key.startswith("_")}
@@ -533,7 +539,7 @@ def _coastal_coverage(
     distances = np.full(ocean.shape, np.inf, dtype=np.float32)
     seed_y, seed_x = np.nonzero(coastal)
     distances[seed_y, seed_x] = 0.0
-    queue = [(0.0, int(y), int(x)) for y, x in zip(seed_y, seed_x)]
+    queue = [(0.0, int(y), int(x)) for y, x in zip(seed_y, seed_x, strict=True)]
     heapq.heapify(queue)
     west, south, east, north = CONTEXT_BOUNDS
     lon_step = (east - west) / (width - 1)
@@ -559,7 +565,7 @@ def _coastal_coverage(
                 heapq.heappush(queue, (candidate, next_y, next_x))
 
     keep = ~ocean | np.isfinite(distances)
-    cropped = keep[y_halo:y_halo + height, x_halo:x_halo + width]
+    cropped = keep[y_halo : y_halo + height, x_halo : x_halo + width]
     if cropped.shape != (height, width) or not np.any(cropped) or np.all(cropped):
         raise RuntimeError("invalid coastal coverage mask")
     return cropped

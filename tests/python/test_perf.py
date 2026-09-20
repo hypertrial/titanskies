@@ -2,10 +2,21 @@ from __future__ import annotations
 
 import threading
 import time
+from typing import Any
 from unittest.mock import patch
 
 from ingest.http_pool import map_bounded, map_isolated
-from ingest.perf import SPLIT_RSS_BYTES, acquisition_reserve, bounded_timeout, current_asset_memo, current_budget, current_metrics, ingest_run, record_http, should_split
+from ingest.perf import (
+    SPLIT_RSS_BYTES,
+    acquisition_reserve,
+    bounded_timeout,
+    current_asset_memo,
+    current_budget,
+    current_metrics,
+    ingest_run,
+    record_http,
+    should_split,
+)
 
 
 def test_run_budget_skips_when_deadline_is_exhausted() -> None:
@@ -31,8 +42,10 @@ def test_v8_request_timeout_preserves_its_composition_reserve() -> None:
 
 
 def test_request_timeout_never_exceeds_a_short_remaining_budget() -> None:
-    with ingest_run(budget_seconds=1) as (_metrics, budget), acquisition_reserve(0), patch(
-        "ingest.perf.time.perf_counter", return_value=100.0
+    with (
+        ingest_run(budget_seconds=1) as (_metrics, budget),
+        acquisition_reserve(0),
+        patch("ingest.perf.time.perf_counter", return_value=100.0),
     ):
         budget.started = 99.05
         timeout = bounded_timeout(30)
@@ -79,7 +92,7 @@ def test_overlapping_runs_keep_worker_context_isolated() -> None:
     second_done = threading.Event()
     results: dict[str, tuple[bool, bool, str | None]] = {}
 
-    def sample(metrics, budget) -> tuple[bool, bool, str | None]:
+    def sample(metrics: Any, budget: Any) -> tuple[bool, bool, str | None]:
         return current_metrics() is metrics, current_budget() is budget, current_asset_memo().get("run")
 
     def first() -> None:
@@ -87,7 +100,9 @@ def test_overlapping_runs_keep_worker_context_isolated() -> None:
             current_asset_memo()["run"] = "first"
             first_active.set()
             assert second_active.wait(2)
-            results["first_during"] = map_isolated([0, 1], lambda _item: sample(metrics, budget), workers=2)[0]
+            isolated = map_isolated([0, 1], lambda _item: sample(metrics, budget), workers=2)[0]
+            assert not isinstance(isolated, BaseException)
+            results["first_during"] = isolated
             first_sampled.set()
             assert second_done.wait(2)
             results["first_after"] = map_bounded([0, 1], lambda _item: sample(metrics, budget), workers=2)[0]

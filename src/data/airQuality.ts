@@ -1,8 +1,8 @@
 import { fetchJson } from "./contextClient";
-import { LOCAL_FRESH_MS, MONITOR_MATCH_METERS, contextCapabilities, contextSourceLabel, isAirQualityMonitor, isFireIncident, isIso } from "./contextSchema";
+import { LOCAL_FRESH_MS, MONITOR_MATCH_METERS, contextSourceLabel, isAirQualityMonitor, isFireIncident, isIso } from "./contextSchema";
 import type { AirIndexMode, AirIndexSystem, AirMonitorSource, AirQualityMonitor, ContextManifest, FireIncident, SourceState } from "./contextSchema";
 
-export async function loadMonitors(url: string): Promise<AirQualityMonitor[]> {
+async function loadMonitors(url: string): Promise<AirQualityMonitor[]> {
   const payload = await fetchJson<{ monitors?: unknown[] }>(url);
   return (payload.monitors ?? []).filter(isAirQualityMonitor).map(normalizeAirQualityMonitor);
 }
@@ -25,7 +25,7 @@ export function monitorIndexValue(monitor: AirQualityMonitor): number {
   return monitor.indexValue ?? monitor.aqi ?? 0;
 }
 
-export function aqhiDisplayValue(value: number): number | "10+" {
+function aqhiDisplayValue(value: number): number | "10+" {
   if (value > 10) return "10+";
   return Math.max(1, Math.min(10, Math.floor(value + 0.5)));
 }
@@ -42,10 +42,6 @@ export function filterAirMonitors(monitors: AirQualityMonitor[], mode: AirIndexM
     : monitorIndexSystem(monitor) === "us-epa-pm25-aqi");
 }
 
-export function localAirIndicesAvailable(manifest: ContextManifest | null | undefined): boolean {
-  return Boolean(manifest && contextCapabilities(manifest.version)?.aqhi && manifest.air.monitorSets?.aqhi?.url);
-}
-
 export function airMonitorUrls(manifest: ContextManifest, mode?: AirIndexMode): string[] {
   const sets = manifest.air.monitorSets;
   const urls: Record<AirMonitorSource, string | undefined> = {
@@ -58,13 +54,16 @@ export function airMonitorUrls(manifest: ContextManifest, mode?: AirIndexMode): 
   return [...new Set(names.map((name) => urls[name]).filter((url): url is string => Boolean(url)))];
 }
 
+export function newestTime(values: Array<string | undefined>): string {
+  return values.filter((value): value is string => Boolean(value)).sort((left, right) => Date.parse(right) - Date.parse(left))[0] ?? "";
+}
+
 export function airObservationTime(manifest: ContextManifest, mode?: AirIndexMode): string {
   const names: AirMonitorSource[] = mode === "local" ? ["airnow", "aqhi"] : mode === "comparable" ? ["airnow", "bcair", "sinaica"] : ["airnow", "bcair", "sinaica", "aqhi"];
-  return [
+  return newestTime([
     ...(mode !== "local" ? [manifest.air.observedAt] : []),
     ...names.map((name) => manifest.air.monitorSets?.[name]?.observedAt),
-  ].filter((value): value is string => Boolean(value) && isIso(value))
-    .sort((left, right) => Date.parse(right) - Date.parse(left))[0] ?? "";
+  ].filter((value): value is string => Boolean(value) && isIso(value)));
 }
 
 export function airSourceStates(manifest: ContextManifest, mode?: AirIndexMode): Array<[string, SourceState]> {
@@ -230,7 +229,7 @@ export const EPA_AQI_CATEGORIES = [
   { label: "Hazardous", range: "301+", maximum: null, color: "#7e0023", className: "hazardous" },
 ] as const;
 
-export function aqiColor(aqi: number): string {
+function aqiColor(aqi: number): string {
   return EPA_AQI_CATEGORIES.find((category) => category.maximum === null || aqi <= category.maximum)?.color ?? EPA_AQI_CATEGORIES.at(-1)!.color;
 }
 

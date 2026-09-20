@@ -14,7 +14,6 @@ type ApplyArgs = {
 
 export function useContextPolling({
   expectedSources,
-  followingLiveRef,
   onChangedPublication,
   onSamePublication,
 }: {

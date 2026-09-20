@@ -1,6 +1,7 @@
 /// <reference lib="webworker" />
 
 import { decodeForecastRgba, type ForecastRasterBuffers } from "./forecastRasterDecode";
+import { decodeBitmap } from "./imageDecode";
 
 export type ForecastRasterWorkerRequest = {
   type: "decode";
@@ -18,29 +19,6 @@ export type ForecastRasterWorkerReply = ForecastRasterWorkerSuccess | ForecastRa
 
 const controllers = new Map<number, AbortController>();
 const IMAGE_TIMEOUT_MS = 15_000;
-
-async function decodeBitmap(blob: Blob, signal: AbortSignal): Promise<ImageBitmap> {
-  const pending = createImageBitmap(blob, { premultiplyAlpha: "none" });
-  pending.then((image) => { if (signal.aborted) image.close(); }, () => undefined);
-  if (signal.aborted) throw signal.reason;
-  let onAbort: (() => void) | undefined;
-  try {
-    const image = await Promise.race([
-      pending,
-      new Promise<never>((_, reject) => {
-        onAbort = () => reject(signal.reason);
-        signal.addEventListener("abort", onAbort, { once: true });
-      }),
-    ]);
-    if (signal.aborted) {
-      image.close();
-      throw signal.reason;
-    }
-    return image;
-  } finally {
-    if (onAbort) signal.removeEventListener("abort", onAbort);
-  }
-}
 
 async function bitmap(url: string, signal: AbortSignal): Promise<ImageBitmap> {
   const controller = new AbortController();

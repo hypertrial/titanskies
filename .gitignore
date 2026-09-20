@@ -177,3 +177,13 @@ playwright/.cache/
 # OS
 .DS_Store
 .vercel
+
+# Local / retired trees
+macos/
+packaging/
+operations/
+tmp/
+
+# Pad workspace state; keep only the committed lock
+.pad/*
+!.pad/universal.lock.json

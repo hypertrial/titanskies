@@ -213,6 +213,7 @@ export function ContextSurface({ resident, fromIndex, toIndex, details, visibleD
     texture.needsUpdate = true;
     return texture;
   }, [detailGrid.columns, detailGrid.rows, detailMixBytes]);
+  const visibleDetailIdSet = useMemo(() => new Set(visibleDetailIds), [visibleDetailIds]);
   const readyDetails = useRef(new Set<number>());
   const hiddenReported = useRef(false);
   const setDetailReady = useCallback((index: number, ready: boolean) => {
@@ -229,7 +230,7 @@ export function ContextSurface({ resident, fromIndex, toIndex, details, visibleD
     let changed = false;
     let maximum = 0;
     for (let index = 0; index < detailMix.length; index += 1) {
-      const target = detailEnabled && readyDetails.current.has(index) && visibleDetailIds.includes(index) ? 1 : 0;
+      const target = detailEnabled && readyDetails.current.has(index) && visibleDetailIdSet.has(index) ? 1 : 0;
       const current = detailMix[index];
       const next = advanceDetailMix(current, target, delta, reducedMotion);
       detailMix[index] = next;

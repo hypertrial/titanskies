@@ -4,16 +4,20 @@ import os
 import subprocess
 from pathlib import Path
 
-
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "scripts" / "verify-container-platforms"
 
 
 def test_container_verifiers_do_not_require_gnu_seq() -> None:
+    helper = (ROOT / "scripts" / "lib" / "wait-for-health.sh").read_text(encoding="utf-8")
+    assert "seq " not in helper
+    assert 'while [ "$attempt" -lt 90 ]' in helper
     for name in ("verify-container", "verify-container-platforms"):
         source = (ROOT / "scripts" / name).read_text(encoding="utf-8")
         assert "seq " not in source
-        assert 'while [ "$attempt" -lt 90 ]' in source
+        assert "scripts/lib/wait-for-health.sh" in source
+        assert "wait_for_health" in source
+        assert 'while [ "$attempt" -lt 90 ]' not in source
 
 
 def test_platform_verifier_builds_and_health_checks_both_architectures(tmp_path: Path) -> None:
@@ -65,9 +69,7 @@ esac
         assert f"volume rm titanskies-platform-data-{arch}-" in calls
         assert f"volume rm titanskies-platform-cache-{arch}-" in calls
         assert f"image rm titanskies-platform-{arch}:verify-" in calls
-    assert calls.index("buildx build --platform linux/arm64") < calls.index(
-        "buildx build --platform linux/amd64"
-    )
+    assert calls.index("buildx build --platform linux/arm64") < calls.index("buildx build --platform linux/amd64")
 
 
 def test_platform_verifier_fails_when_builder_lacks_a_target(tmp_path: Path) -> None:
@@ -84,9 +86,7 @@ fi
     docker.chmod(0o755)
     env = {**os.environ, "PATH": f"{tmp_path}:{os.environ['PATH']}"}
 
-    result = subprocess.run(
-        [str(SCRIPT)], cwd=ROOT, env=env, capture_output=True, text=True, check=False
-    )
+    result = subprocess.run([str(SCRIPT)], cwd=ROOT, env=env, capture_output=True, text=True, check=False)
 
     assert result.returncode != 0
     assert "does not support linux/amd64" in result.stderr
@@ -118,9 +118,7 @@ esac
         "PATH": f"{tmp_path}:{os.environ['PATH']}",
     }
 
-    result = subprocess.run(
-        [str(SCRIPT)], cwd=ROOT, env=env, capture_output=True, text=True, check=False
-    )
+    result = subprocess.run([str(SCRIPT)], cwd=ROOT, env=env, capture_output=True, text=True, check=False)
 
     assert result.returncode != 0
     assert "linux/arm64 health smoke failed" in result.stderr
@@ -158,9 +156,7 @@ esac
         "PATH": f"{tmp_path}:{os.environ['PATH']}",
     }
 
-    result = subprocess.run(
-        [str(SCRIPT)], cwd=ROOT, env=env, capture_output=True, text=True, check=False
-    )
+    result = subprocess.run([str(SCRIPT)], cwd=ROOT, env=env, capture_output=True, text=True, check=False)
 
     assert result.returncode != 0
     assert "expected arm64" in result.stderr

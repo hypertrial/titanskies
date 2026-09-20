@@ -235,11 +235,11 @@ function isCanonicalV7Outlook(run: ForecastRun, generatedAt: string): boolean {
   return run.frames.every((frame, index) => Date.parse(frame.validTime) === start + index * 3_600_000);
 }
 
-export function unwrapLon(lon: number): number {
+function unwrapLon(lon: number): number {
   return lon > 90 ? lon - 360 : lon;
 }
 
-export function inMonitorBounds(lon: number, lat: number): boolean {
+function inMonitorBounds(lon: number, lat: number): boolean {
   return MONITOR_REGIONS.some((region) => lon >= region.west && lon <= region.east && lat >= region.south && lat <= region.north);
 }
 
@@ -437,7 +437,7 @@ export function normalizeContextManifest(manifest: ContextManifest): ContextMani
   };
 }
 
-export function forecastRun(manifest: ContextManifest, model: ForecastModelId): ForecastRun {
+function forecastRun(manifest: ContextManifest, model: ForecastModelId): ForecastRun {
   const normalized = normalizeContextManifest(manifest);
   return normalized.forecasts?.[model] ?? { frames: [] };
 }

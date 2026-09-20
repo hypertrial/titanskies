@@ -117,14 +117,22 @@ type LayoutState = {
 
 const LANDMARK_GLYPHS = { natural: "△", park: "●", cultural: "◆" } as const;
 
-function sameLayoutState(left: LayoutState | null, right: LayoutState): boolean {
+function sameNumberList(left: number[], right: ArrayLike<number>): boolean {
+  if (left.length !== right.length) return false;
+  for (let index = 0; index < left.length; index += 1) {
+    if (left[index] !== right[index]) return false;
+  }
+  return true;
+}
+
+function sameLayoutState(left: LayoutState | null, right: Omit<LayoutState, "world" | "projection">, world: ArrayLike<number>, projection: ArrayLike<number>): boolean {
   return Boolean(left
     && left.width === right.width
     && left.height === right.height
     && left.compact === right.compact
     && left.fontRevision === right.fontRevision
-    && left.world.every((value, index) => value === right.world[index])
-    && left.projection.every((value, index) => value === right.projection[index]));
+    && sameNumberList(left.world, world)
+    && sameNumberList(left.projection, projection));
 }
 
 function MapLabelLayer({ compact, geo }: { compact: boolean; geo: GeoContext }) {
@@ -193,16 +201,20 @@ function MapLabelLayer({ compact, geo }: { compact: boolean; geo: GeoContext }) 
     }
     const context = canvasContextRef.current;
     if (!overlay) return 0;
-    const nextState: LayoutState = {
-      world: [...camera.matrixWorld.elements],
-      projection: [...camera.projectionMatrix.elements],
+    const nextMeta = {
       width: size.width,
       height: size.height,
       compact,
       fontRevision: fontRevisionRef.current,
     };
-    if (sameLayoutState(lastStateRef.current, nextState)) return acceptedIdsRef.current.size;
-    lastStateRef.current = nextState;
+    if (sameLayoutState(lastStateRef.current, nextMeta, camera.matrixWorld.elements, camera.projectionMatrix.elements)) {
+      return acceptedIdsRef.current.size;
+    }
+    lastStateRef.current = {
+      ...nextMeta,
+      world: Array.from(camera.matrixWorld.elements),
+      projection: Array.from(camera.projectionMatrix.elements),
+    };
 
     const distance = camera.position.length();
     cameraDirection.copy(camera.position).normalize();

@@ -6,7 +6,9 @@ import json
 import re
 import subprocess
 import sys
+import tomllib
 from pathlib import Path
+from typing import NoReturn
 from urllib.parse import urlparse
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -61,15 +63,34 @@ USER_FACING_DISTRIBUTION_DOCS = {
     "docs/RELEASE.md",
     *(path.relative_to(ROOT).as_posix() for path in (ROOT / "docs/releases").glob("v*.md")),
 }
-RETIRED_NATIVE_INSTRUCTION = re.compile(
-    r"(?i)\b(?:omarchy|systemd|install-user|update-user|uninstall-user|release-cosign|cosign_key)\b"
-)
+RETIRED_NATIVE_INSTRUCTION = re.compile(r"(?i)\b(?:omarchy|systemd|install-user|update-user|uninstall-user|release-cosign|cosign_key)\b")
 
 
-def fail(message: str) -> None:
+def fail(message: str) -> NoReturn:
     print(f"public-release check: {message}", file=sys.stderr)
     raise SystemExit(1)
 
+
+def _ingest_version() -> str:
+    source = (ROOT / "ingest/__init__.py").read_text(encoding="utf-8")
+    for node in ast.walk(ast.parse(source, filename="ingest/__init__.py")):
+        if not isinstance(node, ast.Assign):
+            continue
+        if not any(isinstance(target, ast.Name) and target.id == "__version__" for target in node.targets):
+            continue
+        if isinstance(node.value, ast.Constant) and isinstance(node.value.value, str):
+            return node.value.value
+    fail("ingest.__version__ is missing")
+
+
+pyproject = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+pyproject_version = pyproject.get("project", {}).get("version")
+ingest_version = _ingest_version()
+if PACKAGE.get("version") != pyproject_version or PACKAGE.get("version") != ingest_version:
+    fail(
+        "package.json, pyproject.toml, and ingest.__version__ must match "
+        f"({PACKAGE.get('version')!r}, {pyproject_version!r}, {ingest_version!r})"
+    )
 
 sources = REGISTRY.get("sources")
 if not isinstance(sources, list) or {item.get("id") for item in sources} != EXPECTED:
@@ -85,17 +106,8 @@ for item in sources:
     if not isinstance(item.get("endpointHosts"), list) or not item["endpointHosts"]:
         fail(f"{item.get('id')} has no endpoint host allowlist")
 
-endpoint_hosts = {
-    host
-    for item in sources
-    for host in item.get("endpointHosts", [])
-}
-registered_hosts = {
-    host
-    for item in sources
-    for key in ("endpointHosts", "documentationHosts")
-    for host in item.get(key, [])
-}
+endpoint_hosts = {host for item in sources for host in item.get("endpointHosts", [])}
+registered_hosts = {host for item in sources for key in ("endpointHosts", "documentationHosts") for host in item.get(key, [])}
 runtime_files = sorted((ROOT / "ingest").rglob("*.py"))
 runtime_host_registries: list[set[str]] = []
 for path in runtime_files:
@@ -117,26 +129,27 @@ for path in runtime_files:
         elif isinstance(node, ast.ImportFrom) and node.module:
             imported = [f"{node.module}.{alias.name}" for alias in node.names]
         if path not in {ROOT / "ingest/http.py", ROOT / "ingest/blob_store.py"} and any(
-            name == module or name.startswith(module + ".")
-            for name in imported
-            for module in NETWORK_CLIENT_MODULES
+            name == module or name.startswith(module + ".") for name in imported for module in NETWORK_CLIENT_MODULES
         ):
             fail(f"direct network client import in {path.relative_to(ROOT)}")
         if not isinstance(node, (ast.Assign, ast.AnnAssign)):
             continue
         targets = node.targets if isinstance(node, ast.Assign) else [node.target]
-        if any(isinstance(target, ast.Name) and target.id == "REGISTERED_ENDPOINT_HOSTS" for target in targets):
-            runtime_host_registries.append({
-                value.value
-                for value in ast.walk(node.value)
-                if isinstance(value, ast.Constant) and isinstance(value.value, str)
-            })
-        if not any(isinstance(target, ast.Name) and target.id.endswith("HOSTS") for target in targets):
-            continue
         if node.value is None:
             continue
+        if any(isinstance(target, ast.Name) and target.id == "REGISTERED_ENDPOINT_HOSTS" for target in targets):
+            runtime_host_registries.append(
+                {value.value for value in ast.walk(node.value) if isinstance(value, ast.Constant) and isinstance(value.value, str)}
+            )
+        if not any(isinstance(target, ast.Name) and target.id.endswith("HOSTS") for target in targets):
+            continue
         for value in ast.walk(node.value):
-            if isinstance(value, ast.Constant) and isinstance(value.value, str) and "." in value.value and value.value not in endpoint_hosts:
+            if (
+                isinstance(value, ast.Constant)
+                and isinstance(value.value, str)
+                and "." in value.value
+                and value.value not in endpoint_hosts
+            ):
                 fail(f"non-endpoint host {value.value} in {path.relative_to(ROOT)}")
 if runtime_host_registries != [endpoint_hosts]:
     fail("shared HTTP endpoint hosts differ from the source registry")
@@ -178,10 +191,26 @@ for relative in sorted(USER_FACING_DISTRIBUTION_DOCS):
 
 for relative in sorted(release_files):
     path = ROOT / relative
-    if not path.is_file() or any(part in {
-        ".git", ".venv", "node_modules", ".next", "public", "tests", "artifacts", "test-results", "playwright-report",
-        ".local", "dist", ".build", ".build-icon", ".swiftpm",
-    } for part in path.parts):
+    if not path.is_file() or any(
+        part
+        in {
+            ".git",
+            ".venv",
+            "node_modules",
+            ".next",
+            "public",
+            "tests",
+            "artifacts",
+            "test-results",
+            "playwright-report",
+            ".local",
+            "dist",
+            ".build",
+            ".build-icon",
+            ".swiftpm",
+        }
+        for part in path.parts
+    ):
         continue
     if ".test." in path.name:
         continue
@@ -220,17 +249,27 @@ if pad_directory.exists():
             "scripts/verify-fast",
         }
         files = lock["files"]
-        if not isinstance(files, dict) or set(files) != expected_files or any(
-            not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest)
-            for digest in files.values()
+        if (
+            not isinstance(files, dict)
+            or set(files) != expected_files
+            or any(not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest) for digest in files.values())
         ):
             fail("Universal Pad lock is invalid")
-workflows = ROOT / ".github/workflows"
-if workflows.is_dir():
-    for workflow in workflows.glob("*.y*ml"):
-        for action in ACTION.findall(workflow.read_text(encoding="utf-8")):
+
+
+def _require_pinned_actions(directory: Path, pattern: str) -> None:
+    if not directory.is_dir():
+        return
+    for path in directory.rglob(pattern):
+        for action in ACTION.findall(path.read_text(encoding="utf-8")):
+            if action.startswith("./"):
+                continue
             if not re.fullmatch(r"[^@]+@[0-9a-f]{40}", action):
                 fail(f"workflow action is not pinned to a commit: {action}")
+
+
+_require_pinned_actions(ROOT / ".github/workflows", "*.y*ml")
+_require_pinned_actions(ROOT / ".github/actions", "action.yml")
 docker_lines = (ROOT / "Dockerfile").read_text(encoding="utf-8").splitlines()
 if not docker_lines or not re.fullmatch(r"# syntax=[^@]+@sha256:[0-9a-f]{64}", docker_lines[0]):
     fail("Dockerfile syntax frontend is not pinned to a digest")

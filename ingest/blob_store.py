@@ -1,14 +1,13 @@
 from __future__ import annotations
 
-from contextlib import contextmanager
-from contextvars import ContextVar
 import json
 import random
 import threading
 import time
 import uuid
+from contextlib import AbstractContextManager
 from datetime import datetime
-from typing import Any, ContextManager, Iterator
+from typing import Any
 from urllib.parse import urlparse
 
 import requests
@@ -16,8 +15,17 @@ from requests.adapters import HTTPAdapter
 
 from ingest.config import Settings
 from ingest.http import USER_AGENT
-from ingest.local_store import IngestLease, StoragePage, lease_expired, validate_store_path
 from ingest.perf import bounded_timeout, current_metrics, record_storage
+from ingest.store import (
+    DEFAULT_GET_MAX_BYTES,
+    IngestLease,
+    StoragePage,
+    has_operation_deadline,
+    lease_expired,
+    operation_deadline_remaining,
+    storage_operation_budget,
+    validate_store_path,
+)
 
 _PUBLIC_FALLBACK_STATUSES = frozenset({401, 403, 404, 405})
 _RETRYABLE_STATUSES = frozenset({429, 500, 502, 503, 504})
@@ -26,34 +34,11 @@ _BLOB_API_BASE = "https://vercel.com/api/blob"
 _BLOB_API_HOST = "vercel.com"
 _BLOB_API_PATH = "/api/blob"
 _BLOB_API_VERSION = "12"
-_DEFAULT_GET_MAX_BYTES = 16 * 1024 * 1024
 _LOCAL = threading.local()
-
-
-_OPERATION_DEADLINE: ContextVar[float | None] = ContextVar("blob_operation_deadline", default=None)
-
-
-def _check_operation_deadline() -> float | None:
-    deadline = _OPERATION_DEADLINE.get()
-    if deadline is None:
-        return None
-    remaining = deadline - time.monotonic()
-    if remaining <= 0:
-        raise TimeoutError("storage housekeeping deadline reached")
-    return remaining
 
 
 def _pathname(value: str) -> str:
     return validate_store_path(value)
-
-
-@contextmanager
-def storage_operation_budget(seconds: float) -> Iterator[None]:
-    token = _OPERATION_DEADLINE.set(time.monotonic() + seconds)
-    try:
-        yield
-    finally:
-        _OPERATION_DEADLINE.reset(token)
 
 
 def _blob_session() -> requests.Session:
@@ -79,38 +64,40 @@ def _retrying_request(
 ) -> requests.Response:
     last_error: Exception | None = None
     session = _blob_session()
-    caller = {"GET": session.get, "PUT": session.put, "POST": session.post}[method.upper()]
+    caller: Any = {"GET": session.get, "PUT": session.put, "POST": session.post, "HEAD": session.head}[method.upper()]
     kwargs.setdefault("allow_redirects", allow_redirects)
     requested_timeout = float(kwargs.get("timeout", 30))
     headers = kwargs.get("headers") or {}
     if any(str(key).lower() == "authorization" for key in headers):
         parsed = urlparse(url)
         host = (parsed.hostname or "").lower()
-        if parsed.scheme != "https" or host != _BLOB_API_HOST or not (
-            parsed.path == _BLOB_API_PATH or parsed.path.startswith(f"{_BLOB_API_PATH}/")
+        if (
+            parsed.scheme != "https"
+            or host != _BLOB_API_HOST
+            or not (parsed.path == _BLOB_API_PATH or parsed.path.startswith(f"{_BLOB_API_PATH}/"))
         ):
             raise RuntimeError("blob credentials are limited to the Vercel Blob API")
-    if _OPERATION_DEADLINE.get() is not None:
+    if has_operation_deadline():
         retries = 0
     for attempt in range(max(1, retries + 1)):
         timeout = bounded_timeout(requested_timeout, reserve_finalization=False)
         if timeout is None:
             raise RuntimeError("ingest deadline reached during Blob request")
-        operation_remaining = _check_operation_deadline()
+        operation_remaining = operation_deadline_remaining()
         # Requests bounds connect/read separately, not total wall time. Check
         # the deadline again after headers and during every response chunk.
         kwargs["timeout"] = min(timeout, operation_remaining / 2) if operation_remaining else timeout
         try:
             response = caller(url, **kwargs)
             try:
-                _check_operation_deadline()
+                operation_deadline_remaining()
             except TimeoutError:
                 response.close()
                 raise
             if allow_conflict and response.status_code in {409, 412}:
                 return response
             if response.status_code in _RETRYABLE_STATUSES and attempt < retries:
-                delay = min(8.0, 0.4 * (2 ** attempt)) * (0.5 + random.random())
+                delay = min(8.0, 0.4 * (2**attempt)) * (0.5 + random.random())
                 remaining_delay = bounded_timeout(delay, reserve_finalization=False)
                 if remaining_delay is None or remaining_delay < delay:
                     return response
@@ -125,7 +112,7 @@ def _retrying_request(
             last_error = exc
             if attempt >= retries:
                 raise
-            delay = min(8.0, 0.4 * (2 ** attempt)) * (0.5 + random.random())
+            delay = min(8.0, 0.4 * (2**attempt)) * (0.5 + random.random())
             remaining_delay = bounded_timeout(delay, reserve_finalization=False)
             if remaining_delay is None or remaining_delay < delay:
                 raise
@@ -145,7 +132,7 @@ def _read_limited(response: requests.Response, max_bytes: int) -> bytes:
     chunks: list[bytes] = []
     size = 0
     for chunk in response.iter_content(64 * 1024):
-        _check_operation_deadline()
+        operation_deadline_remaining()
         if bounded_timeout(1, reserve_finalization=False) is None:
             raise RuntimeError("ingest deadline reached during Blob response")
         if not chunk:
@@ -200,7 +187,7 @@ class BlobFrameStore:
         encoded = json.dumps(payload, separators=(",", ":")).encode("utf-8")
         return self.put_bytes(pathname, encoded, "application/json", cache_seconds=cache_seconds, overwrite=overwrite)
 
-    def get_bytes(self, pathname: str, *, max_bytes: int = _DEFAULT_GET_MAX_BYTES) -> bytes | None:
+    def get_bytes(self, pathname: str, *, max_bytes: int = DEFAULT_GET_MAX_BYTES) -> bytes | None:
         pathname = _pathname(pathname)
         headers = {"User-Agent": USER_AGENT}
         response = _retrying_request(
@@ -218,6 +205,22 @@ class BlobFrameStore:
             body = _read_limited(response, max_bytes)
             record_storage("read", bytes_in=len(body))
             return body
+        finally:
+            response.close()
+
+    def exists(self, pathname: str) -> bool:
+        pathname = _pathname(pathname)
+        response = _retrying_request(
+            "HEAD",
+            self.url_for(pathname),
+            headers={"Cache-Control": "no-cache", "User-Agent": USER_AGENT},
+            timeout=30,
+            retries=0,
+        )
+        try:
+            record_storage("read")
+            # Only a 200 HEAD is existence. 403/5xx must not be treated as a valid asset.
+            return response.status_code == 200
         finally:
             response.close()
 
@@ -260,8 +263,12 @@ class BlobFrameStore:
     def get_authoritative_json(self, pathname: str) -> dict[str, Any] | None:
         pathname = _pathname(pathname)
         response = _retrying_request(
-            "GET", self.url_for(pathname),
-            headers={"Cache-Control": "no-cache", "User-Agent": USER_AGENT}, timeout=5, retries=0, stream=True,
+            "GET",
+            self.url_for(pathname),
+            headers={"Cache-Control": "no-cache", "User-Agent": USER_AGENT},
+            timeout=5,
+            retries=0,
+            stream=True,
         )
         try:
             if response.status_code == 404:
@@ -296,7 +303,9 @@ class BlobFrameStore:
             if len(paths) != len(blobs) or any(not isinstance(path, str) or not path.startswith(prefix + "/") for path in paths):
                 raise ValueError("invalid Blob paths")
             next_cursor = payload.get("cursor") if payload.get("hasMore") else None
-            if payload.get("hasMore") and (not isinstance(next_cursor, str) or not next_cursor or len(next_cursor) > 8192 or next_cursor == cursor):
+            if payload.get("hasMore") and (
+                not isinstance(next_cursor, str) or not next_cursor or len(next_cursor) > 8192 or next_cursor == cursor
+            ):
                 raise ValueError("invalid Blob list cursor")
             record_storage("list")
             return StoragePage([str(path) for path in paths], next_cursor)
@@ -445,6 +454,7 @@ class BlobFrameStore:
         now: datetime,
         expires_at: datetime,
     ) -> IngestLease | None:
+        # Do-Not-Refactor: Blob lease takeover is TOCTOU until conditional Blob writes exist.
         payload = {
             "owner": owner,
             "startedAt": now.isoformat().replace("+00:00", "Z"),
@@ -472,5 +482,5 @@ class BlobFrameStore:
         if payload.get("owner") == lease.owner:
             self._delete_lease(lease.pathname, etag or lease.etag)
 
-    def operation_budget(self, seconds: float) -> ContextManager[None]:
+    def operation_budget(self, seconds: float) -> AbstractContextManager[None]:
         return storage_operation_budget(seconds)

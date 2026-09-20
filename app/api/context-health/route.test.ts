@@ -1,16 +1,16 @@
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { createHash } from "node:crypto";
-import { cp, mkdtemp, mkdir, readFile, unlink, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { cp, mkdir, readFile, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 
+import { installTempDataDir } from "../../../tests/support/tempDataDir";
 import { GET } from "./route";
 
-const previousRoot = process.env.TITANSKIES_DATA_DIR;
+const createDataDir = installTempDataDir();
 const previousWatchSeconds = process.env.CONTEXT_WATCH_SECONDS;
 
 async function demoPublication(): Promise<string> {
-  const directory = await mkdtemp(path.join(tmpdir(), "titanskies-health-"));
+  const directory = await createDataDir("titanskies-health-");
   const pointer = JSON.parse(await readFile(path.join(process.cwd(), "public/demo/context/latest.json"), "utf8"));
   await mkdir(path.join(directory, "context/manifests"), { recursive: true });
   await cp(path.join(process.cwd(), "public/demo/context/assets"), path.join(directory, "context/assets"), { recursive: true });
@@ -22,15 +22,12 @@ async function demoPublication(): Promise<string> {
   await writeFile(path.join(directory, pointer.manifestPath), encodedManifest);
   await writeFile(path.join(directory, "context/latest.json"), JSON.stringify(pointer));
   await cp(path.join(process.cwd(), "public/demo/context/status.json"), path.join(directory, "context/status.json"));
-  process.env.TITANSKIES_DATA_DIR = directory;
   return directory;
 }
 
 beforeEach(() => vi.useFakeTimers());
 afterEach(() => {
   vi.useRealTimers();
-  if (previousRoot === undefined) delete process.env.TITANSKIES_DATA_DIR;
-  else process.env.TITANSKIES_DATA_DIR = previousRoot;
   if (previousWatchSeconds === undefined) delete process.env.CONTEXT_WATCH_SECONDS;
   else process.env.CONTEXT_WATCH_SECONDS = previousWatchSeconds;
 });
@@ -53,7 +50,7 @@ it("uses the configured watcher interval when deciding publication expiry", asyn
 }, 30_000);
 
 it("reports initializing with 503 before the first publication", async () => {
-  process.env.TITANSKIES_DATA_DIR = await mkdtemp(path.join(tmpdir(), "titanskies-empty-"));
+  await createDataDir("titanskies-empty-");
   const response = await GET(new Request("http://localhost/api/context-health"));
   const body = await response.json();
   expect(response.status).toBe(503);

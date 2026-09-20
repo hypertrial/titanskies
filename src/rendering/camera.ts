@@ -1,4 +1,4 @@
-import { Frustum, Matrix4, PerspectiveCamera, Sphere, type Camera } from "three";
+import { Frustum, Matrix4, PerspectiveCamera, Sphere, Vector3, type Camera } from "three";
 import { detailTileBounds, DISPLAY_BOUNDS, type DetailGridShape } from "@/data/contextSchema";
 import { lonLatToVector3 } from "./projection";
 
@@ -61,6 +61,16 @@ function displaySamples() {
 
 const SAMPLES = displaySamples();
 
+const DETAIL_FRUSTUM = new Frustum();
+const DETAIL_PROJECTION = new Matrix4();
+const DETAIL_DIRECTION = new Vector3();
+const DETAIL_CENTER = new Vector3();
+const DETAIL_CENTER_NORMAL = new Vector3();
+const DETAIL_CORNER = new Vector3();
+const DETAIL_CORNER_NORMAL = new Vector3();
+const DETAIL_PROJECTED = new Vector3();
+const DETAIL_SPHERE = new Sphere();
+
 export function fitOverviewDistance(
   width: number,
   height: number,
@@ -97,20 +107,30 @@ export function fitOverviewDistance(
 }
 
 export function visibleDetailTiles(camera: Camera, grid: DetailGridShape): number[] {
-  const direction = camera.position.clone().normalize();
+  DETAIL_DIRECTION.copy(camera.position).normalize();
   const horizon = 1 / camera.position.length() - 0.05;
-  const frustum = new Frustum().setFromProjectionMatrix(new Matrix4().multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse));
+  DETAIL_FRUSTUM.setFromProjectionMatrix(DETAIL_PROJECTION.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse));
   const result: Array<{ id: number; distance: number }> = [];
   for (let row = 0; row < grid.rows; row += 1) for (let column = 0; column < grid.columns; column += 1) {
     const { west, east, south, north } = detailTileBounds(grid, column, row);
-    const center = lonLatToVector3((west + east) / 2, (south + north) / 2, 1.008);
-    const corners = [[west, south], [east, south], [west, north], [east, north]].map(([lon, lat]) => lonLatToVector3(lon, lat, 1.008));
-    const angularRadius = Math.max(...corners.map((point) => Math.acos(Math.min(1, Math.max(-1, point.clone().normalize().dot(center.clone().normalize()))))));
-    const centerAngle = Math.acos(Math.min(1, Math.max(-1, center.clone().normalize().dot(direction))));
+    lonLatToVector3((west + east) / 2, (south + north) / 2, 1.008, DETAIL_CENTER);
+    DETAIL_CENTER_NORMAL.copy(DETAIL_CENTER).normalize();
+    let angularRadius = 0;
+    let sphereRadius = 0;
+    const corners: Array<[number, number]> = [[west, south], [east, south], [west, north], [east, north]];
+    for (const [lon, lat] of corners) {
+      lonLatToVector3(lon, lat, 1.008, DETAIL_CORNER);
+      DETAIL_CORNER_NORMAL.copy(DETAIL_CORNER).normalize();
+      angularRadius = Math.max(angularRadius, Math.acos(Math.min(1, Math.max(-1, DETAIL_CORNER_NORMAL.dot(DETAIL_CENTER_NORMAL)))));
+      sphereRadius = Math.max(sphereRadius, DETAIL_CORNER.distanceTo(DETAIL_CENTER));
+    }
+    const centerAngle = Math.acos(Math.min(1, Math.max(-1, DETAIL_CENTER_NORMAL.dot(DETAIL_DIRECTION))));
     if (Math.cos(Math.max(0, centerAngle - angularRadius)) <= horizon) continue;
-    if (!frustum.intersectsSphere(new Sphere(center, Math.max(...corners.map((point) => point.distanceTo(center)))))) continue;
-    const projected = center.clone().project(camera);
-    result.push({ id: row * grid.columns + column, distance: projected.x ** 2 + projected.y ** 2 });
+    DETAIL_SPHERE.center.copy(DETAIL_CENTER);
+    DETAIL_SPHERE.radius = sphereRadius;
+    if (!DETAIL_FRUSTUM.intersectsSphere(DETAIL_SPHERE)) continue;
+    DETAIL_PROJECTED.copy(DETAIL_CENTER).project(camera);
+    result.push({ id: row * grid.columns + column, distance: DETAIL_PROJECTED.x ** 2 + DETAIL_PROJECTED.y ** 2 });
   }
   return result.sort((left, right) => left.distance - right.distance || left.id - right.id).map((item) => item.id);
 }

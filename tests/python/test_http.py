@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+from typing import Any
 from unittest.mock import Mock, patch
 
 import pytest
 
-from ingest.http import GLOBAL_HTTP_LIMIT, HTTP_LIMIT_MAX, HttpFetchError, configure_http_limit, fetch, session_get
+from ingest.config import Settings
+from ingest.http import _PROVIDER_SEMAPHORES, GLOBAL_HTTP_LIMIT, HTTP_LIMIT_MAX, HttpFetchError, configure_http_limit, fetch, session_get
 from ingest.http_pool import map_bounded, map_isolated, map_isolated_batches
 from ingest.perf import ingest_run
 
@@ -14,6 +16,20 @@ def test_http_defaults_and_clamp() -> None:
     assert HTTP_LIMIT_MAX == 16
     configure_http_limit(99)
     configure_http_limit(12)
+
+
+def test_provider_semaphores_follow_settings() -> None:
+    settings = Settings(hrrr_concurrency=3, firework_concurrency=2, sinaica_concurrency=5, http_concurrency=8)
+    configure_http_limit(settings.http_concurrency, settings)
+    assert _PROVIDER_SEMAPHORES["nomads.ncep.noaa.gov"]._value == 3
+    assert _PROVIDER_SEMAPHORES["geo.weather.gc.ca"]._value == 2
+    assert _PROVIDER_SEMAPHORES["sinaica.inecc.gob.mx"]._value == 5
+    assert _PROVIDER_SEMAPHORES["www.airnowapi.org"]._value == 4
+    assert _PROVIDER_SEMAPHORES["www.env.gov.bc.ca"]._value == 2
+    configure_http_limit(12)
+    assert _PROVIDER_SEMAPHORES["nomads.ncep.noaa.gov"]._value == 4
+    assert _PROVIDER_SEMAPHORES["geo.weather.gc.ca"]._value == 6
+    assert _PROVIDER_SEMAPHORES["sinaica.inecc.gob.mx"]._value == 4
 
 
 def test_http_429_sets_host_cooldown() -> None:
@@ -264,10 +280,12 @@ def test_streaming_response_stops_when_acquisition_budget_expires() -> None:
     session = Mock()
     session.request.return_value = response
     with ingest_run(budget_seconds=10) as (_metrics, budget):
-        def chunks():
+
+        def chunks() -> Any:
             yield b"first"
             budget.started -= 20
             yield b"second"
+
         response.iter_content = Mock(return_value=chunks())
         with patch("ingest.http._session", return_value=session), pytest.raises(HttpFetchError, match="deadline"):
             fetch("https://api.weather.gc.ca/data", hosts=frozenset({"api.weather.gc.ca"}), retries=0)
@@ -283,7 +301,8 @@ def test_stream_read_timeout_cannot_consume_the_finalization_reserve() -> None:
     session = Mock()
     session.request.return_value = response
     with ingest_run(budget_seconds=60) as (_metrics, budget):
-        def chunks():
+
+        def chunks() -> Any:
             _connect_timeout, read_timeout = session.request.call_args.kwargs["timeout"]
             budget.started -= budget.acquisition_remaining() + read_timeout
             yield b"late"
@@ -326,78 +345,96 @@ def test_request_timeout_is_reclamped_after_waiting_for_a_slot() -> None:
     assert session.request.call_args.kwargs["timeout"] == 10.0
 
 
-
-def test_batches_reuse_worker_sessions_and_copy_each_job_context():
+def test_batches_reuse_worker_sessions_and_copy_each_job_context() -> None:
     import threading
     from contextvars import ContextVar
+
     from ingest.http import _session
+
     context = ContextVar("pool_test", default="missing")
     barrier = threading.Barrier(2)
     sessions = []
-    def worker(item):
+
+    def worker(item: Any) -> Any:
         before = context.get()
         session = _session()
         sessions.append(session)
         barrier.wait(timeout=5)
         context.set("worker mutation")
         return (item, before, id(session))
-    def before_batch():
+
+    def before_batch() -> None:
         context.set("parent")
+
     try:
         results = map_isolated_batches(list(range(6)), worker, workers=2, before_batch=before_batch)
-        assert [r[:2] for r in results] == [(i, "parent") for i in range(6)]
-        assert len({r[2] for r in results}) == 2
+        typed = [item for item in results if not isinstance(item, BaseException)]
+        assert [item[:2] for item in typed] == [(i, "parent") for i in range(6)]
+        assert len({item[2] for item in typed}) == 2
     finally:
         for session in sessions:
             session.close()
 
 
-def test_batch_deadline_and_callback_failure_do_not_schedule_more_work():
+def test_batch_deadline_and_callback_failure_do_not_schedule_more_work() -> None:
     calls = []
     checks = []
-    def before_batch():
+
+    def before_batch() -> Any:
         checks.append(1)
         if len(checks) == 2:
             return RuntimeError("deadline")
+
     result = map_isolated_batches(list(range(9)), lambda i: calls.append(i), workers=3, before_batch=before_batch)
     assert sorted(calls) == [0, 1, 2]
     assert result[:3] == [None, None, None]
     assert isinstance(result[-1], RuntimeError)
     calls.clear()
-    def stop(_batch):
+
+    def stop(_batch: Any) -> bool:
         raise ValueError("stop callback failed")
+
     import pytest
+
     with pytest.raises(ValueError, match="stop callback failed"):
         map_isolated_batches(list(range(9)), lambda i: calls.append(i), workers=3, stop_after=stop)
     assert sorted(calls) == [0, 1, 2]
 
 
-def test_batched_workers_reuse_real_http_connections():
-    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+def test_batched_workers_reuse_real_http_connections() -> None:
     import threading
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
     from ingest.http import _session
+
     connections = set()
+
     class Handler(BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
-        def do_GET(self):
+
+        def do_GET(self) -> None:
             connections.add(self.client_address)
             self.send_response(200)
             self.send_header("Content-Length", "2")
             self.end_headers()
             self.wfile.write(b"ok")
-        def log_message(self, *_args):
+
+        def log_message(self, *_args: Any) -> None:
             pass
+
     server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     barrier = threading.Barrier(2)
     sessions = []
-    def worker(_item):
+
+    def worker(_item: Any) -> Any:
         session = _session()
         sessions.append(session)
         barrier.wait(timeout=5)
         with session.get(f"http://127.0.0.1:{server.server_port}/", timeout=5) as response:
             return response.content
+
     try:
         assert map_isolated_batches(list(range(6)), worker, workers=2) == [b"ok"] * 6
         assert len(connections) == 2

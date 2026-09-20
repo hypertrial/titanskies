@@ -66,7 +66,13 @@ _V8_DETAIL_COVERAGE_MASK_PATH = Path(__file__).resolve().parent.parent / "shared
 def coastal_coverage_mask(raster_grid: RasterGrid = BASE_RASTER_GRID) -> np.ndarray:
     detail = raster_grid in {DETAIL_RASTER_GRID, V8_DETAIL_RASTER_GRID}
     width, height = raster_grid.width, raster_grid.height
-    path = _V8_DETAIL_COVERAGE_MASK_PATH if raster_grid == V8_DETAIL_RASTER_GRID else _DETAIL_COVERAGE_MASK_PATH if detail else _COVERAGE_MASK_PATH
+    path = (
+        _V8_DETAIL_COVERAGE_MASK_PATH
+        if raster_grid == V8_DETAIL_RASTER_GRID
+        else _DETAIL_COVERAGE_MASK_PATH
+        if detail
+        else _COVERAGE_MASK_PATH
+    )
     with Image.open(path) as image:
         if image.size != (width, height):
             raise ValueError(f"coastal coverage mask must be {width}x{height}")
@@ -124,9 +130,7 @@ def compose_best_values(
         codes[hrrr_only] = MASK_HRRR
         if firework_values is not None:
             enhanced = both & (hrrr_values > firework_values) & (weights > 0)
-            merged[both] = firework_values[both] + weights[both] * np.maximum(
-                hrrr_values[both] - firework_values[both], 0
-            )
+            merged[both] = firework_values[both] + weights[both] * np.maximum(hrrr_values[both] - firework_values[both], 0)
             codes[enhanced] = MASK_COMBINED
     if coverage_mask is not None:
         coverage = np.asarray(coverage_mask, dtype=bool)
@@ -167,14 +171,16 @@ def _detail_tiles(values: np.ndarray, codes: np.ndarray) -> list[dict[str, Any]]
     tiles = []
     for row, y0 in enumerate((0, DETAIL_TILE_HEIGHT - 1)):
         for column, x0 in enumerate((0, DETAIL_TILE_WIDTH - 1)):
-            tile_values = values[y0:y0 + DETAIL_TILE_HEIGHT, x0:x0 + DETAIL_TILE_WIDTH]
-            tile_codes = codes[y0:y0 + DETAIL_TILE_HEIGHT, x0:x0 + DETAIL_TILE_WIDTH]
-            tiles.append({
-                "column": column,
-                "row": row,
-                "texturePng": encode_concentration(tile_values, np.isfinite(tile_values)),
-                "maskPng": encode_mask_png(tile_codes),
-            })
+            tile_values = values[y0 : y0 + DETAIL_TILE_HEIGHT, x0 : x0 + DETAIL_TILE_WIDTH]
+            tile_codes = codes[y0 : y0 + DETAIL_TILE_HEIGHT, x0 : x0 + DETAIL_TILE_WIDTH]
+            tiles.append(
+                {
+                    "column": column,
+                    "row": row,
+                    "texturePng": encode_concentration(tile_values, np.isfinite(tile_values)),
+                    "maskPng": encode_mask_png(tile_codes),
+                }
+            )
     return tiles
 
 
@@ -210,15 +216,19 @@ def _v8_tile_grid(column: int, row: int) -> tuple[RasterGrid, int, int]:
     x0, y0 = column * stride_x, row * stride_y
     dx = (V8_DETAIL_RASTER_GRID.east - V8_DETAIL_RASTER_GRID.west) / (V8_DETAIL_RASTER_GRID.width - 1)
     dy = (V8_DETAIL_RASTER_GRID.north - V8_DETAIL_RASTER_GRID.south) / (V8_DETAIL_RASTER_GRID.height - 1)
-    return RasterGrid(
-        1024,
-        635,
-        f"v8-tile-{column}-{row}",
-        V8_DETAIL_RASTER_GRID.west + x0 * dx,
-        V8_DETAIL_RASTER_GRID.north - (y0 + 634) * dy,
-        V8_DETAIL_RASTER_GRID.west + (x0 + 1023) * dx,
-        V8_DETAIL_RASTER_GRID.north - y0 * dy,
-    ), x0, y0
+    return (
+        RasterGrid(
+            1024,
+            635,
+            f"v8-tile-{column}-{row}",
+            V8_DETAIL_RASTER_GRID.west + x0 * dx,
+            V8_DETAIL_RASTER_GRID.north - (y0 + 634) * dy,
+            V8_DETAIL_RASTER_GRID.west + (x0 + 1023) * dx,
+            V8_DETAIL_RASTER_GRID.north - y0 * dy,
+        ),
+        x0,
+        y0,
+    )
 
 
 def _tile_lonlat(raster_grid: RasterGrid) -> tuple[np.ndarray, np.ndarray]:
@@ -232,7 +242,7 @@ _V8_LATITUDES = np.linspace(V8_DETAIL_RASTER_GRID.north, V8_DETAIL_RASTER_GRID.s
 
 
 def _v8_tile_lonlat(x0: int, y0: int, width: int = 1024, height: int = 635) -> tuple[np.ndarray, np.ndarray]:
-    return np.meshgrid(_V8_LONGITUDES[x0:x0 + width], _V8_LATITUDES[y0:y0 + height])
+    return np.meshgrid(_V8_LONGITUDES[x0 : x0 + width], _V8_LATITUDES[y0 : y0 + height])
 
 
 def v8_hrrr_target_coordinates(grid: HrrrGrid) -> tuple[np.ndarray, np.ndarray]:
@@ -244,8 +254,8 @@ def v8_hrrr_target_coordinates(grid: HrrrGrid) -> tuple[np.ndarray, np.ndarray]:
             tile_grid, x0, y0 = _v8_tile_grid(column, row)
             lon, lat = _v8_tile_lonlat(x0, y0, tile_grid.width, tile_grid.height)
             x, y = lonlat_to_hrrr_xy(lon, lat, grid)
-            target_x[y0:y0 + tile_grid.height, x0:x0 + tile_grid.width] = x.astype(np.float32)
-            target_y[y0:y0 + tile_grid.height, x0:x0 + tile_grid.width] = y.astype(np.float32)
+            target_x[y0 : y0 + tile_grid.height, x0 : x0 + tile_grid.width] = x.astype(np.float32)
+            target_y[y0 : y0 + tile_grid.height, x0 : x0 + tile_grid.width] = y.astype(np.float32)
     return target_x, target_y
 
 
@@ -309,29 +319,43 @@ def compose_v8_frame(
     tiles: list[dict[str, Any]] = []
     hrrr_grid = hrrr.grid if hrrr is not None and isinstance(hrrr.grid, HrrrGrid) else HrrrGrid()
     firework_prepared, hrrr_prepared = _prepared_native(firework), _prepared_native(hrrr)
-    firework_axes = _v8_geographic_sample_axes(firework.grid) if firework is not None and isinstance(firework.grid, GeographicGrid) else None
+    firework_axes = (
+        _v8_geographic_sample_axes(firework.grid) if firework is not None and isinstance(firework.grid, GeographicGrid) else None
+    )
     for row in range(4):
         for column in range(4):
             tile_grid, x0, y0 = _v8_tile_grid(column, row)
-            tile_coverage = coverage[y0:y0 + tile_grid.height, x0:x0 + tile_grid.width]
+            tile_coverage = coverage[y0 : y0 + tile_grid.height, x0 : x0 + tile_grid.width]
             visible_y, visible_x = np.nonzero(tile_coverage)
             if not visible_x.size:
                 fw_values, fw_valid = None, None
             elif firework_axes is not None:
                 fw_values, fw_valid = _covered_native_samples(
-                    firework_prepared, firework_axes[0][x0 + visible_x], firework_axes[1][y0 + visible_y], tile_coverage,
+                    firework_prepared,
+                    firework_axes[0][x0 + visible_x],
+                    firework_axes[1][y0 + visible_y],
+                    tile_coverage,
                 )
             else:
-                fw_values, fw_valid = reproject_native(firework, tile_grid, target_lonlat=_v8_tile_lonlat(x0, y0, tile_grid.width, tile_grid.height))
+                fw_values, fw_valid = reproject_native(
+                    firework, tile_grid, target_lonlat=_v8_tile_lonlat(x0, y0, tile_grid.width, tile_grid.height)
+                )
             tile_hrrr_xy = (
-                hrrr_target_xy[0][y0:y0 + tile_grid.height, x0:x0 + tile_grid.width],
-                hrrr_target_xy[1][y0:y0 + tile_grid.height, x0:x0 + tile_grid.width],
-            ) if hrrr_target_xy is not None else None
+                (
+                    hrrr_target_xy[0][y0 : y0 + tile_grid.height, x0 : x0 + tile_grid.width],
+                    hrrr_target_xy[1][y0 : y0 + tile_grid.height, x0 : x0 + tile_grid.width],
+                )
+                if hrrr_target_xy is not None
+                else None
+            )
             if not visible_x.size:
                 hr_values, hr_valid = None, None
             elif tile_hrrr_xy is not None:
                 hr_values, hr_valid = _covered_native_samples(
-                    hrrr_prepared, tile_hrrr_xy[0][tile_coverage], tile_hrrr_xy[1][tile_coverage], tile_coverage,
+                    hrrr_prepared,
+                    tile_hrrr_xy[0][tile_coverage],
+                    tile_hrrr_xy[1][tile_coverage],
+                    tile_coverage,
                 )
             else:
                 hr_values, hr_valid = reproject_native(hrrr, tile_grid)
@@ -371,7 +395,9 @@ def compose_v8_frame(
             if np.any(existing):
                 old_values = base_values[np.ix_(base_y, base_x)]
                 old_codes = base_codes[np.ix_(base_y, base_x)]
-                if not np.array_equal(old_codes[existing], sampled_codes[existing]) or not np.array_equal(old_values[existing], sampled_values[existing], equal_nan=True):
+                if not np.array_equal(old_codes[existing], sampled_codes[existing]) or not np.array_equal(
+                    old_values[existing], sampled_values[existing], equal_nan=True
+                ):
                     metrics = current_metrics()
                     if metrics:
                         metrics.increment("seam_gate_failures")
@@ -379,18 +405,25 @@ def compose_v8_frame(
             base_values[np.ix_(base_y, base_x)] = sampled_values
             base_codes[np.ix_(base_y, base_x)] = sampled_codes
             base_filled[np.ix_(base_y, base_x)] = True
-            tiles.append({
-                "column": column,
-                "row": row,
-                "texturePng": encode_concentration(merged, np.isfinite(merged), V8_PALETTE_VERSION),
-                "maskPng": encode_mask_png(codes),
-            })
+            tiles.append(
+                {
+                    "column": column,
+                    "row": row,
+                    "texturePng": encode_concentration(merged, np.isfinite(merged), V8_PALETTE_VERSION),
+                    "maskPng": encode_mask_png(codes),
+                }
+            )
             metrics = current_metrics()
             if metrics:
                 metrics.increment("detail_tiles_encoded")
-                metrics.increment("bilinear_tile_reprojections", (int(firework is not None) + int(hrrr is not None)) if visible_x.size else 0)
+                metrics.increment(
+                    "bilinear_tile_reprojections", (int(firework is not None) + int(hrrr is not None)) if visible_x.size else 0
+                )
                 arrays = [base_values, base_codes, base_filled, coverage, fw_values, fw_valid, hr_values, hr_valid, merged, codes, weights]
-                metrics.observe_working_bytes(sum(array.nbytes for array in arrays if isinstance(array, np.ndarray)) + sum(array.nbytes for array in hrrr_target_xy or ()))
+                metrics.observe_working_bytes(
+                    sum(array.nbytes for array in arrays if isinstance(array, np.ndarray))
+                    + sum(array.nbytes for array in hrrr_target_xy or ())
+                )
     if not np.all(base_filled):
         metrics = current_metrics()
         if metrics:
@@ -531,14 +564,16 @@ def compose_best_run(
             and (raster_grid != DETAIL_RASTER_GRID or len(prior.get("detailTiles") or []) == 4)
             and _same_contributors(prior.get("contributors") or [], present)
         ):
-            frames.append({
-                "validTime": valid,
-                "modelRun": prior.get("modelRun") or (hr or fw or {}).get("modelRun"),
-                "textureUrl": prior["textureUrl"],
-                "sourceMaskUrl": prior["sourceMaskUrl"],
-                "contributors": prior.get("contributors") or numeric,
-                **({"detailTiles": prior["detailTiles"]} if raster_grid == DETAIL_RASTER_GRID else {}),
-            })
+            frames.append(
+                {
+                    "validTime": valid,
+                    "modelRun": prior.get("modelRun") or (hr or fw or {}).get("modelRun"),
+                    "textureUrl": prior["textureUrl"],
+                    "sourceMaskUrl": prior["sourceMaskUrl"],
+                    "contributors": prior.get("contributors") or numeric,
+                    **({"detailTiles": prior["detailTiles"]} if raster_grid == DETAIL_RASTER_GRID else {}),
+                }
+            )
             continue
         if raster_grid == DETAIL_RASTER_GRID:
             texture, mask, detail_tiles, _codes = compose_detail_frame(
@@ -563,14 +598,16 @@ def compose_best_run(
                 legacy_mask=legacy_mask,
                 raster_grid=raster_grid,
             )
-        frames.append({
-            "validTime": valid,
-            "modelRun": (hr or fw or {}).get("modelRun") or (firework or {}).get("modelRun"),
-            "texturePng": texture,
-            "maskPng": mask,
-            "contributors": numeric,
-            **({"detailTilePngs": detail_tiles} if raster_grid == DETAIL_RASTER_GRID else {}),
-        })
+        frames.append(
+            {
+                "validTime": valid,
+                "modelRun": (hr or fw or {}).get("modelRun") or (firework or {}).get("modelRun"),
+                "texturePng": texture,
+                "maskPng": mask,
+                "contributors": numeric,
+                **({"detailTilePngs": detail_tiles} if raster_grid == DETAIL_RASTER_GRID else {}),
+            }
+        )
     return {
         "modelId": "best",
         "variable": "best_available_smoke",
@@ -585,10 +622,14 @@ def compose_best_run(
         "coveragePolicy": COVERAGE_POLICY,
         "coastalBufferKm": COASTAL_BUFFER_KM,
         "coverageMaskVersion": DETAIL_COVERAGE_MASK_VERSION if raster_grid == DETAIL_RASTER_GRID else COVERAGE_MASK_VERSION,
-        **({
-            "detailGrid": DETAIL_GRID,
-            "rasterProcessingVersion": DETAIL_RASTER_PROCESSING_VERSION,
-        } if raster_grid == DETAIL_RASTER_GRID else {}),
+        **(
+            {
+                "detailGrid": DETAIL_GRID,
+                "rasterProcessingVersion": DETAIL_RASTER_PROCESSING_VERSION,
+            }
+            if raster_grid == DETAIL_RASTER_GRID
+            else {}
+        ),
         "fireworkProcessingVersion": (firework or {}).get("processingVersion"),
         "hrrrProcessingVersion": (hrrr or {}).get("processingVersion"),
         "incompleteNumeric": incomplete,

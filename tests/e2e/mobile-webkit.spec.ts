@@ -1,4 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
+import { openMore, waitForReady } from "./explorer.fixtures";
 
 const knownViewportWarning = /^Viewport argument key ["']interactive-widget["'] not recognized and ignored\.?$/;
 
@@ -14,16 +15,6 @@ function watchBrowserErrors(page: Page) {
     }
   });
   return () => expect(messages.filter((message) => !knownViewportWarning.test(message))).toEqual([]);
-}
-
-async function waitForReady(page: Page) {
-  await expect(page.getByTestId("loading-state")).toBeHidden({ timeout: 20_000 });
-  await expect(page.locator("canvas")).toHaveCount(1);
-}
-
-async function openMore(page: Page) {
-  await page.getByRole("button", { name: "More options" }).tap();
-  return page.getByRole("dialog", { name: "More" });
 }
 
 test.describe.configure({ mode: "serial" });
@@ -83,7 +74,7 @@ test("shows iOS installation guidance and hides it in standalone mode", async ({
   await page.goto("/");
   await waitForReady(page);
 
-  let more = await openMore(page);
+  let more = await openMore(page, { tap: true });
   await expect(more.getByTestId("install-action")).toContainText("Safari’s Share menu");
   await more.getByTestId("install-action").tap();
   const instructions = page.getByTestId("install-instructions");
@@ -95,7 +86,7 @@ test("shows iOS installation guidance and hides it in standalone mode", async ({
   await page.addInitScript(() => Object.defineProperty(navigator, "standalone", { configurable: true, value: true }));
   await page.reload();
   await waitForReady(page);
-  more = await openMore(page);
+  more = await openMore(page, { tap: true });
   await expect(more.getByTestId("install-action")).toHaveCount(0);
   assertNoBrowserErrors();
 });
@@ -121,7 +112,7 @@ test("keeps short-landscape controls and drawers within the safe viewport", asyn
   expect((legendBox?.y ?? 999) + (legendBox?.height ?? 999)).toBeLessThanOrEqual((dockBox?.y ?? 0) - 8);
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(844);
 
-  const more = await openMore(page);
+  const more = await openMore(page, { tap: true });
   await expect(more).toHaveAttribute("data-scroll-more", "true");
   const body = more.locator(".context-drawer-body");
   await body.evaluate((element) => { element.scrollTop = element.scrollHeight; element.dispatchEvent(new Event("scroll")); });

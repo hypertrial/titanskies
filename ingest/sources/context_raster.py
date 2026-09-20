@@ -2,13 +2,14 @@ from __future__ import annotations
 
 import io
 import zlib
-from typing import Iterable
+from collections.abc import Iterable
 
 from PIL import Image, ImageDraw
 
 from ingest.context_contracts import CONTEXT_BOUNDS, CONTEXT_HEIGHT, CONTEXT_WIDTH
 
-def _clip_ring(points: list[list[float]]) -> list[list[float]]:
+
+def clip_ring(points: list[list[float]]) -> list[list[float]]:
     clipped = points
     for axis, limit, keep_greater in (
         (0, CONTEXT_BOUNDS["west"], True),
@@ -37,6 +38,7 @@ def _clip_ring(points: list[list[float]]) -> list[list[float]]:
         clipped = output
     return clipped
 
+
 def lon_lat_to_pixel(lon: float, lat: float) -> tuple[int, int]:
     x = round((lon - CONTEXT_BOUNDS["west"]) / (CONTEXT_BOUNDS["east"] - CONTEXT_BOUNDS["west"]) * (CONTEXT_WIDTH - 1))
     y = round((CONTEXT_BOUNDS["north"] - lat) / (CONTEXT_BOUNDS["north"] - CONTEXT_BOUNDS["south"]) * (CONTEXT_HEIGHT - 1))
@@ -64,7 +66,8 @@ def rasterize_perimeters(rings: Iterable[list[list[float]]]) -> bytes:
             draw.line([*points, points[0]], fill=(255, 188, 87, 210), width=2, joint="curve")
     return image_png(image)
 
-def _validated_png(data: bytes, label: str, expected_size: tuple[int, int] | None = None) -> bytes:
+
+def validated_png(data: bytes, label: str, expected_size: tuple[int, int] | None = None) -> bytes:
     try:
         with Image.open(io.BytesIO(data)) as image:
             if image.format != "PNG" or expected_size and image.size != expected_size:

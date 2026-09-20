@@ -1,4 +1,13 @@
+import type { ForecastFrame } from "./contextSchema";
 import { MAX_INTERPOLATION_GAP_MINUTES, type TimelineEntry } from "./contracts";
+
+export function timelineEntry(frame: Pick<ForecastFrame, "validTime" | "textureUrl">, index: number): TimelineEntry {
+  return {
+    scanId: `forecast-${index}`,
+    observationStart: frame.validTime,
+    manifestUrl: frame.textureUrl ?? "",
+  };
+}
 
 export type PlaybackSpeed = 0.25 | 1 | 3;
 export const PLAYBACK_RATE = 3_600;

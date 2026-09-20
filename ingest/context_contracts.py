@@ -6,17 +6,12 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-_CONTRACT = json.loads(
-    (Path(__file__).resolve().parent.parent / "shared" / "context-contract-v8.json").read_text(encoding="utf-8")
-)
+_CONTRACT = json.loads((Path(__file__).resolve().parent.parent / "shared" / "context-contract-v8.json").read_text(encoding="utf-8"))
 _CAPABILITY_REGISTRY = json.loads(
     (Path(__file__).resolve().parent.parent / "shared" / "context-capabilities.json").read_text(encoding="utf-8")
 )
 _CONTRACTS = {int(_CONTRACT["version"]): _CONTRACT}
-_CAPABILITIES = {
-    int(item["version"]): item
-    for item in _CAPABILITY_REGISTRY["versions"]
-}
+_CAPABILITIES = {int(item["version"]): item for item in _CAPABILITY_REGISTRY["versions"]}
 
 if set(_CAPABILITIES) != set(_CONTRACTS):
     raise RuntimeError("context capability versions do not match context contracts")
@@ -69,10 +64,7 @@ def iso_utc(value: datetime) -> str:
 
 def in_bounds(lon: float, lat: float, bounds: dict[str, float]) -> bool:
     return (
-        math.isfinite(lon)
-        and math.isfinite(lat)
-        and bounds["west"] <= lon <= bounds["east"]
-        and bounds["south"] <= lat <= bounds["north"]
+        math.isfinite(lon) and math.isfinite(lat) and bounds["west"] <= lon <= bounds["east"] and bounds["south"] <= lat <= bounds["north"]
     )
 
 
@@ -96,9 +88,7 @@ def validate_context_manifest(payload: dict[str, Any]) -> None:
     capabilities = _CAPABILITIES[version]
     expected_bounds = {key: float(value) for key, value in expected_contract["bounds"].items()}
     expected_display = {key: float(value) for key, value in expected_contract["displayBounds"].items()}
-    expected_regions = tuple(
-        {key: float(value) for key, value in region.items()} for region in expected_contract["monitorRegions"]
-    )
+    expected_regions = tuple({key: float(value) for key, value in region.items()} for region in expected_contract["monitorRegions"])
     if payload.get("mode") not in {"demo", "live"}:
         raise ValueError("invalid context mode")
     _require_iso(payload.get("generatedAt"), "generatedAt")
@@ -153,7 +143,9 @@ def validate_context_manifest(payload: dict[str, Any]) -> None:
                 _require_iso(item["observedAt"], f"{name} observation")
             if item.get("countVersion") is not None and not isinstance(item["countVersion"], str):
                 raise ValueError("invalid monitor count version")
-            if item.get("count") is not None and (not isinstance(item["count"], int) or isinstance(item["count"], bool) or item["count"] < 0):
+            if item.get("count") is not None and (
+                not isinstance(item["count"], int) or isinstance(item["count"], bool) or item["count"] < 0
+            ):
                 raise ValueError("invalid monitor count")
         if capabilities["aqhi"]:
             aqhi_set = sets.get("aqhi")
@@ -364,9 +356,7 @@ def _validate_forecast_run(
                 _require_url(tile.get("textureUrl"), f"{label} detail texture")
                 _require_url(tile.get("sourceMaskUrl"), f"{label} detail source mask")
             expected_positions = [
-                (column, row)
-                for row in range(int((grid or {})["rows"]))
-                for column in range(int((grid or {})["columns"]))
+                (column, row) for row in range(int((grid or {})["rows"])) for column in range(int((grid or {})["columns"]))
             ]
             if positions != expected_positions:
                 raise ValueError(f"{label} detail tiles must be row-major")

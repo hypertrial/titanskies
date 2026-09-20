@@ -3,11 +3,12 @@ from __future__ import annotations
 import json
 import logging
 import os
+from collections.abc import Callable
 from http.server import BaseHTTPRequestHandler
-from typing import Any, Callable
+from typing import Any
 
 from ingest.auth import authorization_header, authorize, redact
-from ingest.config import _load_env_files
+from ingest.config import load_env_files
 
 JSON_MAX_BYTES = 4_500_000
 LOGGER = logging.getLogger("titanskies.cron")
@@ -41,7 +42,7 @@ def _authorized(handler: BaseHTTPRequestHandler) -> bool:
 
 
 def handle_cron_head(handler: BaseHTTPRequestHandler) -> None:
-    _load_env_files()
+    load_env_files()
     if not _authorized(handler):
         write_json(handler, 401, {"ok": False, "error": "Unauthorized"})
         return
@@ -49,12 +50,13 @@ def handle_cron_head(handler: BaseHTTPRequestHandler) -> None:
 
 
 def handle_cron_get(handler: BaseHTTPRequestHandler, run: Callable[[Any], dict[str, Any]]) -> None:
-    _load_env_files()
+    load_env_files()
     if not _authorized(handler):
         write_json(handler, 401, {"ok": False, "error": "Unauthorized"})
         return
     try:
         from ingest.config import Settings
+
         result = run(Settings.from_env())
         if not isinstance(result, dict):
             raise TypeError("cron result must be an object")

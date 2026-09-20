@@ -66,8 +66,9 @@ def test_canada_point_is_outside_hrrr_domain() -> None:
     mask = domain_mask(HrrrGrid())
     # Edmonton is north of the HRRR CONUS domain.
     from ingest.sources.context_raster import lon_lat_to_pixel
+
     x, y = lon_lat_to_pixel(-113.49, 53.55)
-    assert mask[y, x] == False
+    assert not mask[y, x]
 
 
 def test_reproject_preserves_a_known_value() -> None:
@@ -77,6 +78,7 @@ def test_reproject_preserves_a_known_value() -> None:
     lon, lat = hrrr_xy_to_lonlat(np.array([10.0]), np.array([10.0]), grid)
     sample, valid = reproject_hrrr(values, grid=grid)
     from ingest.sources.context_raster import lon_lat_to_pixel
+
     x, y = lon_lat_to_pixel(float(lon[0]), float(lat[0]))
     assert valid[y, x]
     assert sample[y, x] > 5
@@ -137,7 +139,7 @@ def _dense_reference(
     indexes = ((y0, x0), (y0, x1), (y1, x0), (y1, x1))
     total = np.zeros(x.shape, dtype=np.float64)
     weighted = np.zeros(x.shape, dtype=np.float64)
-    for weight, (rows, columns) in zip(weights, indexes):
+    for weight, (rows, columns) in zip(weights, indexes, strict=True):
         usable = valid_source[rows, columns]
         contribution = np.where(usable, weight, 0.0)
         total += contribution
@@ -148,8 +150,9 @@ def _dense_reference(
     return sample, valid
 
 
-def test_sparse_bilinear_matches_dense_reference_bitwise():
+def test_sparse_bilinear_matches_dense_reference_bitwise() -> None:
     from ingest.forecast_raster import _sample_bilinear_valid
+
     rng = np.random.default_rng(817)
     field = rng.normal(20, 15, (13, 17)).astype(np.float32)
     field[0, :3] = [np.nan, np.inf, -np.inf]

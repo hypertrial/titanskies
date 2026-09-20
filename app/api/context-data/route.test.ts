@@ -1,16 +1,14 @@
 import { afterEach, expect, it, vi } from "vitest";
-import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 
+import { installTempDataDir } from "../../../tests/support/tempDataDir";
 import { GET } from "./route";
 
-const previousRoot = process.env.TITANSKIES_DATA_DIR;
+const createDataDir = installTempDataDir();
 
 afterEach(() => {
   vi.unstubAllEnvs();
-  if (previousRoot === undefined) delete process.env.TITANSKIES_DATA_DIR;
-  else process.env.TITANSKIES_DATA_DIR = previousRoot;
 });
 
 it("redirects Blob mode only to an approved Vercel Blob origin", async () => {
@@ -36,7 +34,7 @@ it.each([
 it("retains the filesystem pointer behavior when Blob mode is not configured", async () => {
   vi.stubEnv("STORAGE_BACKEND", "local");
   vi.stubEnv("PUBLIC_BLOB_BASE_URL", "");
-  const root = await mkdtemp(path.join(tmpdir(), "titanskies-context-data-"));
+  const root = await createDataDir("titanskies-context-data-");
   await mkdir(path.join(root, "context"));
   const pointer = {
     version: 8,
@@ -45,7 +43,6 @@ it("retains the filesystem pointer behavior when Blob mode is not configured", a
     updatedAt: "2024-07-15T20:00:00Z",
   };
   await writeFile(path.join(root, "context/latest.json"), JSON.stringify(pointer));
-  process.env.TITANSKIES_DATA_DIR = root;
   const response = await GET();
   expect(response.status).toBe(200);
   await expect(response.json()).resolves.toEqual(pointer);
@@ -56,7 +53,7 @@ it("does not fetch inherited production storage from a demo preview", async () =
   vi.stubEnv("STORAGE_BACKEND", "local");
   vi.stubEnv("PUBLIC_BLOB_BASE_URL", "https://production.public.blob.vercel-storage.com");
   vi.stubEnv("NEXT_PUBLIC_CONTEXT_URL", "/demo/context/latest.json");
-  process.env.TITANSKIES_DATA_DIR = await mkdtemp(path.join(tmpdir(), "titanskies-preview-"));
+  await createDataDir("titanskies-preview-");
   const fetchMock = vi.spyOn(globalThis, "fetch");
   expect((await GET()).status).toBe(503);
   expect(fetchMock).not.toHaveBeenCalled();

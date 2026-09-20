@@ -5,7 +5,6 @@ import shutil
 import subprocess
 from pathlib import Path
 
-
 ROOT = Path(__file__).resolve().parents[2]
 REVISION = "93a0dbedd66a0643a638cff386aacf348304b063"
 TAG_OBJECT = "13a0dbedd66a0643a638cff386aacf348304b063"
@@ -42,22 +41,22 @@ def _release_checkout(tmp_path: Path) -> tuple[Path, dict[str, str], Path, Path]
         'case "$1" in\n'
         '  status) [ "${FAKE_DIRTY:-0}" = 1 ] && echo " M dirty"; exit 0 ;;\n'
         '  describe) printf "%s\\n" "${FAKE_DESCRIBE:-v0.1.0}" ;;\n'
-        '  cat-file)\n'
+        "  cat-file)\n"
         '    if [ "${FAKE_TAG_TYPE:-tag}" = checkout-commit ] && [ -f "$FAKE_STATE/tag-refreshed" ]; then echo tag;\n'
         '    else printf "%s\\n" "${FAKE_TAG_TYPE:-tag}"; fi ;;\n'
-        '  ls-remote)\n'
+        "  ls-remote)\n"
         '    count_file="$FAKE_STATE/remote-lookups"\n'
         '    count=0; [ ! -f "$count_file" ] || count=$(cat "$count_file")\n'
         '    count=$((count + 1)); printf "%s" "$count" > "$count_file"\n'
         f'    remote_revision="${{FAKE_REMOTE_REVISION:-{REVISION}}}"\n'
         '    if [ -n "${FAKE_REMOTE_DIVERGE_AFTER:-}" ] && [ "$count" -gt "$FAKE_REMOTE_DIVERGE_AFTER" ]; then remote_revision=different; fi\n'
         f'    printf "%s\\trefs/tags/v0.1.0\\n%s\\trefs/tags/v0.1.0^{{}}\\n" "${{FAKE_REMOTE_TAG:-{TAG_OBJECT}}}" "$remote_revision" ;;\n'
-        '  fetch)\n'
+        "  fetch)\n"
         '    [ "${FAKE_FETCH_FAIL:-0}" != 1 ] || exit 1\n'
         '    case "$*" in *refs/tags/v0.1.0:refs/tags/v0.1.0*) : > "$FAKE_STATE/tag-refreshed" ;; esac ;;\n'
         '  merge-base) [ "${FAKE_NOT_ON_MAIN:-0}" != 1 ] ;;\n'
         f'  rev-parse) case "$2" in refs/tags/*) echo {TAG_OBJECT} ;; *) echo {REVISION} ;; esac ;;\n'
-        'esac\n',
+        "esac\n",
     )
     _executable(fake_bin / "npm", 'printf "npm %s\\n" "$*" >> "$FAKE_LOG"\n')
     _executable(
@@ -72,107 +71,107 @@ def _release_checkout(tmp_path: Path) -> tuple[Path, dict[str, str], Path, Path]
         '    [ -f "$FAKE_STATE/latest" ] || { echo "release created before latest" >&2; exit 3; }\n'
         '    if [ "${FAKE_RELEASE_FAIL_ONCE:-0}" = 1 ] && [ ! -f "$FAKE_STATE/release-failed" ]; then\n'
         '      : > "$FAKE_STATE/release-failed"; exit 4\n'
-        '    fi\n'
+        "    fi\n"
         '    : > "$FAKE_STATE/release" ;;\n'
-        'esac\n',
+        "esac\n",
     )
     _executable(
         fake_bin / "docker",
         'printf "docker DOCKER_CONFIG=%s %s\\n" "${DOCKER_CONFIG:-}" "$*" >> "$FAKE_LOG"\n'
         'if [ "$1 $2 $3" = "buildx inspect --bootstrap" ]; then\n'
         '  printf "Platforms: %s\\n" "${FAKE_BUILDER_PLATFORMS:-linux/amd64,linux/arm64}"; exit 0\n'
-        'fi\n'
+        "fi\n"
         'if [ "$1 $2 $3" = "buildx imagetools inspect" ]; then\n'
-        '  format= reference=\n'
+        "  format= reference=\n"
         '  while [ "$#" -gt 0 ]; do\n'
         '    case "$1" in --format) shift; format=$1 ;; ghcr.io/*) reference=$1 ;; esac\n'
-        '    shift\n'
-        '  done\n'
+        "    shift\n"
+        "  done\n"
         '  case "$format" in\n'
-        '    *SBOM*)\n'
+        "    *SBOM*)\n"
         '      [ "${FAKE_MISSING_SBOM:-0}" != 1 ] || exit 1\n'
         '      packages="[{\\"name\\":\\"titanskies\\"}]"\n'
         '      [ "${FAKE_INVALID_SBOM:-0}" != 1 ] || packages="[]"\n'
         '      printf "{\\"linux/amd64\\":{\\"SPDX\\":{\\"SPDXID\\":\\"SPDXRef-DOCUMENT\\",\\"spdxVersion\\":\\"SPDX-2.3\\",\\"packages\\":%s}},\\"linux/arm64\\":{\\"SPDX\\":{\\"SPDXID\\":\\"SPDXRef-DOCUMENT\\",\\"spdxVersion\\":\\"SPDX-2.3\\",\\"packages\\":%s}}}\\n" "$packages" "$packages"\n'
-        '      exit 0 ;;\n'
-        '    *Provenance*)\n'
+        "      exit 0 ;;\n"
+        "    *Provenance*)\n"
         '      [ "${FAKE_MISSING_PROVENANCE:-0}" != 1 ] || exit 1\n'
         '      materials="[{\\"uri\\":\\"https://github.com/hypertrial/titanskies\\"}]"\n'
         '      [ "${FAKE_INVALID_PROVENANCE:-0}" != 1 ] || materials="[]"\n'
-        '      completeness=true\n'
+        "      completeness=true\n"
         '      [ "${FAKE_INCOMPLETE_PROVENANCE:-0}" != 1 ] || completeness=false\n'
         '      vcs="{\\"source\\":\\"${FAKE_PROVENANCE_SOURCE:-https://github.com/hypertrial/titanskies}\\",\\"revision\\":\\"${FAKE_PROVENANCE_REVISION:-$FAKE_REVISION}\\"}"\n'
         '      if [ "${FAKE_LEGACY_PROVENANCE:-0}" = 1 ]; then\n'
         '        printf "{\\"linux/amd64\\":{\\"SLSA\\":{\\"buildType\\":\\"https://mobyproject.org/buildkit@v1\\",\\"invocation\\":{\\"environment\\":{\\"platform\\":\\"linux/amd64\\"}},\\"metadata\\":{\\"completeness\\":{\\"parameters\\":%s},\\"https://mobyproject.org/buildkit@v1#metadata\\":{\\"vcs\\":%s}},\\"materials\\":%s}},\\"linux/arm64\\":{\\"SLSA\\":{\\"buildType\\":\\"https://mobyproject.org/buildkit@v1\\",\\"invocation\\":{\\"environment\\":{\\"platform\\":\\"linux/arm64\\"}},\\"metadata\\":{\\"completeness\\":{\\"parameters\\":%s},\\"https://mobyproject.org/buildkit@v1#metadata\\":{\\"vcs\\":%s}},\\"materials\\":%s}}}\\n" "$completeness" "$vcs" "$materials" "$completeness" "$vcs" "$materials"\n'
-        '      else\n'
+        "      else\n"
         '        revision="${FAKE_PROVENANCE_REVISION:-$FAKE_REVISION}"\n'
         '        source="${FAKE_PROVENANCE_SOURCE:-https://github.com/hypertrial/titanskies}"\n'
         '        printf "{\\"linux/amd64\\":{\\"SLSA\\":{\\"buildDefinition\\":{\\"buildType\\":\\"https://github.com/moby/buildkit/blob/master/docs/attestations/slsa-definitions.md\\",\\"externalParameters\\":{\\"request\\":{\\"root\\":{\\"request\\":{\\"args\\":{\\"vcs:revision\\":\\"%s\\",\\"vcs:source\\":\\"%s\\",\\"label:org.opencontainers.image.revision\\":\\"%s\\",\\"label:org.opencontainers.image.source\\":\\"%s\\"}}}}},\\"internalParameters\\":{\\"buildConfig\\":{\\"llbDefinition\\":[{\\"op\\":{\\"platform\\":{\\"OS\\":\\"linux\\",\\"Architecture\\":\\"amd64\\"}}}]}},\\"resolvedDependencies\\":%s},\\"runDetails\\":{\\"metadata\\":{\\"buildkit_completeness\\":{\\"request\\":%s},\\"buildkit_metadata\\":{\\"source\\":{},\\"vcs\\":%s}}}}},\\"linux/arm64\\":{\\"SLSA\\":{\\"buildDefinition\\":{\\"buildType\\":\\"https://github.com/moby/buildkit/blob/master/docs/attestations/slsa-definitions.md\\",\\"externalParameters\\":{\\"request\\":{\\"root\\":{\\"request\\":{\\"args\\":{\\"vcs:revision\\":\\"%s\\",\\"vcs:source\\":\\"%s\\",\\"label:org.opencontainers.image.revision\\":\\"%s\\",\\"label:org.opencontainers.image.source\\":\\"%s\\"}}}}},\\"internalParameters\\":{\\"buildConfig\\":{\\"llbDefinition\\":[{\\"op\\":{\\"platform\\":{\\"OS\\":\\"linux\\",\\"Architecture\\":\\"arm64\\"}}}]}},\\"resolvedDependencies\\":%s},\\"runDetails\\":{\\"metadata\\":{\\"buildkit_completeness\\":{\\"request\\":%s},\\"buildkit_metadata\\":{\\"source\\":{},\\"vcs\\":%s}}}}}}\\n" "$revision" "$source" "$revision" "$source" "$materials" "$completeness" "$vcs" "$revision" "$source" "$revision" "$source" "$materials" "$completeness" "$vcs"\n'
-        '      fi\n'
-        '      exit 0 ;;\n'
-        '  esac\n'
+        "      fi\n"
+        "      exit 0 ;;\n"
+        "  esac\n"
         '  case "$reference" in\n'
-        '    *:v0.1.0)\n'
+        "    *:v0.1.0)\n"
         '      [ -f "$FAKE_STATE/version" ] || exit 1\n'
         '      if [ -n "${DOCKER_CONFIG:-}" ] && [ "${FAKE_ANON_FAIL:-0}" = 1 ]; then exit 1; fi\n'
-        '      reference_digest=${FAKE_VERSION_DIGEST:-$FAKE_DIGEST} ;;\n'
+        "      reference_digest=${FAKE_VERSION_DIGEST:-$FAKE_DIGEST} ;;\n"
         '    *:latest) [ -f "$FAKE_STATE/latest" ] || exit 1; reference_digest=${FAKE_LATEST_DIGEST:-$FAKE_DIGEST} ;;\n'
         '    *@sha256:*) [ -f "$FAKE_STATE/digest" ] || exit 1 ;;\n'
-        '  esac\n'
+        "  esac\n"
         '  [ -n "$format" ] || exit 0\n'
-        '  architecture=${FAKE_IMAGE_ARCH:-arm64}\n'
-        '  revision=${FAKE_IMAGE_REVISION:-$FAKE_REVISION}\n'
-        '  digest=${reference_digest:-${FAKE_IMAGE_DIGEST:-$FAKE_DIGEST}}\n'
-        f'  amd64_digest={AMD64_DIGEST}\n'
-        f'  arm64_digest={ARM64_DIGEST}\n'
-        '  arm64_subject=${FAKE_ATTESTATION_SUBJECT:-$arm64_digest}\n'
+        "  architecture=${FAKE_IMAGE_ARCH:-arm64}\n"
+        "  revision=${FAKE_IMAGE_REVISION:-$FAKE_REVISION}\n"
+        "  digest=${reference_digest:-${FAKE_IMAGE_DIGEST:-$FAKE_DIGEST}}\n"
+        f"  amd64_digest={AMD64_DIGEST}\n"
+        f"  arm64_digest={ARM64_DIGEST}\n"
+        "  arm64_subject=${FAKE_ATTESTATION_SUBJECT:-$arm64_digest}\n"
         '  printf "{\\"digest\\":\\"%s\\",\\"annotations\\":{\\"org.opencontainers.image.revision\\":\\"%s\\",\\"org.opencontainers.image.version\\":\\"0.1.0\\",\\"org.opencontainers.image.source\\":\\"https://github.com/hypertrial/titanskies\\"},\\"manifests\\":[{\\"digest\\":\\"%s\\",\\"platform\\":{\\"os\\":\\"linux\\",\\"architecture\\":\\"amd64\\"}},{\\"digest\\":\\"%s\\",\\"platform\\":{\\"os\\":\\"linux\\",\\"architecture\\":\\"%s\\"}},{\\"digest\\":\\"sha256:3333333333333333333333333333333333333333333333333333333333333333\\",\\"platform\\":{\\"os\\":\\"unknown\\",\\"architecture\\":\\"unknown\\"},\\"annotations\\":{\\"vnd.docker.reference.type\\":\\"attestation-manifest\\",\\"vnd.docker.reference.digest\\":\\"%s\\"}},{\\"digest\\":\\"sha256:4444444444444444444444444444444444444444444444444444444444444444\\",\\"platform\\":{\\"os\\":\\"unknown\\",\\"architecture\\":\\"unknown\\"},\\"annotations\\":{\\"vnd.docker.reference.type\\":\\"attestation-manifest\\",\\"vnd.docker.reference.digest\\":\\"%s\\"}}]}\\n" "$digest" "$revision" "$amd64_digest" "$arm64_digest" "$architecture" "$amd64_digest" "$arm64_subject"\n'
-        '  exit 0\n'
-        'fi\n'
+        "  exit 0\n"
+        "fi\n"
         'if [ "$1 $2" = "buildx build" ]; then\n'
-        '  metadata=\n'
+        "  metadata=\n"
         '  while [ "$#" -gt 0 ]; do [ "$1" = --metadata-file ] && { shift; metadata=$1; }; shift; done\n'
         '  : > "$FAKE_STATE/digest"\n'
         '  printf "{\\"containerimage.digest\\":\\"%s\\"}\\n" "$FAKE_DIGEST" > "$metadata"\n'
-        '  exit 0\n'
-        'fi\n'
+        "  exit 0\n"
+        "fi\n"
         'if [ "$1 $2 $3" = "buildx imagetools create" ]; then\n'
-        '  target=\n'
+        "  target=\n"
         '  while [ "$#" -gt 0 ]; do [ "$1" = --tag ] && { shift; target=$1; }; shift; done\n'
         '  case "$target" in\n'
-        '    *:v0.1.0)\n'
+        "    *:v0.1.0)\n"
         '      if [ "${FAKE_VERSION_TAG_FAIL_ONCE:-0}" = 1 ] && [ ! -f "$FAKE_STATE/version-tag-failed" ]; then : > "$FAKE_STATE/version-tag-failed"; exit 5; fi\n'
         '      : > "$FAKE_STATE/version" ;;\n'
-        '    *:latest)\n'
+        "    *:latest)\n"
         '      if [ "${FAKE_LATEST_FAIL_ONCE:-0}" = 1 ] && [ ! -f "$FAKE_STATE/latest-failed" ]; then : > "$FAKE_STATE/latest-failed"; exit 6; fi\n'
         '      : > "$FAKE_STATE/latest" ;;\n'
-        '  esac\n'
-        '  exit 0\n'
-        'fi\n'
-        'exit 1\n',
+        "  esac\n"
+        "  exit 0\n"
+        "fi\n"
+        "exit 1\n",
     )
     _executable(
         fake_bin / "cosign",
         'printf "cosign %s\\n" "$*" >> "$FAKE_LOG"\n'
         'case "$1" in\n'
-        '  sign)\n'
+        "  sign)\n"
         '    if [ "${FAKE_SIGN_FAIL_ONCE:-0}" = 1 ] && [ ! -f "$FAKE_STATE/sign-failed" ]; then\n'
         '      : > "$FAKE_STATE/sign-failed"; exit 1\n'
-        '    fi\n'
+        "    fi\n"
         '    : > "$FAKE_STATE/signed" ;;\n'
         '  verify) [ "${FAKE_BAD_SIGNATURE:-0}" != 1 ] && [ -f "$FAKE_STATE/signed" ] ;;\n'
-        'esac\n',
+        "esac\n",
     )
     _executable(
         fake_bin / "curl",
         'printf "curl %s\\n" "$*" >> "$FAKE_LOG"\n'
         'case "$*" in\n'
         '  *ghcr.io/token*) printf "{\\"token\\":\\"anonymous-token\\"}\\n" ;;\n'
-        '  *ghcr.io/v2/hypertrial/titanskies/manifests/*)\n'
+        "  *ghcr.io/v2/hypertrial/titanskies/manifests/*)\n"
         '    [ "${FAKE_ANON_FAIL:-0}" != 1 ] || exit 22\n'
         '    printf "{}\\n" ;;\n'
-        '  *) exit 1 ;;\n'
-        'esac\n',
+        "  *) exit 1 ;;\n"
+        "esac\n",
     )
 
     env = {
@@ -196,9 +195,7 @@ def _release_checkout(tmp_path: Path) -> tuple[Path, dict[str, str], Path, Path]
     return repo, env, state, log
 
 
-def _run_release(
-    repo: Path, env: dict[str, str], mode: str = "publish"
-) -> subprocess.CompletedProcess[str]:
+def _run_release(repo: Path, env: dict[str, str], mode: str = "publish") -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         [repo / "scripts/release", mode],
         cwd=repo,
@@ -244,10 +241,7 @@ def test_release_refreshes_annotated_tag_object_synthesized_by_checkout(
 
     assert result.returncode == 0, result.stderr
     assert (state / "tag-refreshed").exists()
-    assert (
-        "git fetch --force origin refs/tags/v0.1.0:refs/tags/v0.1.0"
-        in _commands(log)
-    )
+    assert "git fetch --force origin refs/tags/v0.1.0:refs/tags/v0.1.0" in _commands(log)
 
 
 def test_release_rejects_missing_oidc_before_registry_mutation(tmp_path: Path) -> None:
@@ -479,9 +473,7 @@ def test_release_keyless_identity_and_release_are_exact_and_last(tmp_path: Path)
     commands = _commands(log)
     assert "--provenance=mode=max" in commands
     assert "--sbom=true" in commands
-    assert "BUILDX_GIT_LABELS=full BUILDX_GIT_CHECK_DIRTY=1 docker buildx build" in (
-        repo / "scripts/release"
-    ).read_text(encoding="utf-8")
+    assert "BUILDX_GIT_LABELS=full BUILDX_GIT_CHECK_DIRTY=1 docker buildx build" in (repo / "scripts/release").read_text(encoding="utf-8")
     assert "push-by-digest=true" in commands
     assert "ghcr.io/hypertrial/titanskies:release-" not in commands
     assert f"--certificate-identity {IDENTITY}" in commands
@@ -587,9 +579,7 @@ def test_release_retries_latest_failure_from_verified_version_without_rebuild(
 
 def test_release_rejects_changed_latest_digest_and_remote_tag_race(tmp_path: Path) -> None:
     repo, env, state, _ = _release_checkout(tmp_path)
-    changed_latest = _run_release(
-        repo, {**env, "FAKE_LATEST_DIGEST": "sha256:" + "2" * 64}
-    )
+    changed_latest = _run_release(repo, {**env, "FAKE_LATEST_DIGEST": "sha256:" + "2" * 64})
     assert changed_latest.returncode != 0
     assert "latest digest differs" in changed_latest.stderr
     assert not (state / "release").exists()
