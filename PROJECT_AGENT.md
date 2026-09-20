@@ -38,20 +38,22 @@ Wrappers (do not rewrite without a dedicated ticket):
 - Completion: also `npm run build`
 
 Additional completion evidence named by native CI, recorded on the ticket when
-run: `npm run check:public`, `uv run mypy`, `uv run pytest`, Playwright e2e,
-docker image build, and compose smoke. `npm run verify:release` remains the
-public-release gate. `check:public` allows committed `.pad.toml` (workspace slug
-only), the canonical `.pad/universal.lock.json`, and the audited Vercel adapter;
-it rejects credentials, local deployment state, and all other `.pad/` metadata.
+run: `npm run check:public`, `scripts/run_python.sh -m mypy`,
+`scripts/run_python.sh -m pytest`, Playwright e2e, docker image build, and
+compose smoke. `npm run verify:release` remains the public-release gate.
+`check:public` allows committed `.pad.toml` (workspace slug only), the canonical
+`.pad/universal.lock.json`, and the audited Vercel adapter; it rejects
+credentials, local deployment state, and all other `.pad/` metadata.
 Release verification also covers the multi-architecture container, keyless
 release policy, and Docker Compose smoke.
 
 ## Repository owner authority
 
-The repository owner, GitHub user `mattfaltyn`, may merge without another
-person's approval and may bypass branch protections, required reviews, or
-required checks when they explicitly request that action. Treat the owner's
-direct merge instruction as authorization to use the narrowest necessary
-bypass; do not wait for a separate reviewer. This authority does not extend to
-other users. Force-pushing or rewriting a published release tag still requires
-an explicit instruction naming that destructive action.
+The repository owner, GitHub user `mattfaltyn`, may push to `origin/main`
+whatever they want, may merge without another person's approval, and may bypass
+branch protections, required reviews, or required checks. Treat a direct
+finish, merge, or push instruction as authorization to update `origin/main`
+with the narrowest necessary bypass; do not wait for a separate reviewer. This
+authority does not extend to other users. Force-pushing or rewriting a
+published release tag still requires an explicit instruction naming that
+destructive action.
