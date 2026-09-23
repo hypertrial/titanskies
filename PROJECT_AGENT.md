@@ -37,10 +37,14 @@ Wrappers (do not rewrite without a dedicated ticket):
 - Fast: `npm test`, `npm run lint`, `npm run typecheck`
 - Completion: also `npm run build`
 
-Additional completion evidence named by native CI, recorded on the ticket when
-run: `npm run check:public`, `scripts/run_python.sh -m mypy`,
+Pull requests and `main` run `scripts/verify-checks` only. Weekly `heavy.yml`,
+or a manual dispatch of it, runs Playwright e2e and the container smokes.
+`npm run verify:release` remains the public-release gate and starts only when
+`release.yml` is dispatched on the annotated tag. Additional completion
+evidence named by those workflows, recorded on the ticket when run:
+`npm run check:public`, `scripts/run_python.sh -m mypy`,
 `scripts/run_python.sh -m pytest`, Playwright e2e, docker image build, and
-compose smoke. `npm run verify:release` remains the public-release gate.
+compose smoke.
 `check:public` allows committed `.pad.toml` (workspace slug only), the canonical
 `.pad/universal.lock.json`, and the audited Vercel adapter; it rejects
 credentials, local deployment state, and all other `.pad/` metadata.

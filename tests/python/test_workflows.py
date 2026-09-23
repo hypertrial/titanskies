@@ -27,34 +27,59 @@ def test_all_third_party_actions_are_pinned_to_full_commit_shas() -> None:
     assert all(re.fullmatch(r"[^@]+@[0-9a-f]{40}", action) for action in actions if not action.startswith("./"))
 
 
-def test_ci_is_read_only_and_mac_is_manual_only() -> None:
+def test_ci_is_the_fast_check_only() -> None:
     ci = _workflow("ci.yml")
     setup = (ROOT / ".github/actions/setup/action.yml").read_text(encoding="utf-8")
     assert "permissions:\n  contents: read\n" in ci
     assert "pull_request:" in ci and "branches: [main]" in ci
     assert "workflow_dispatch:" in ci
-    assert "github.event_name == 'workflow_dispatch'" in ci
+    assert "schedule:" not in ci
+    assert "inputs:" not in ci
     assert "mac_label" not in ci
-    assert "name: ${{ inputs.runner == 'mac' && 'verify-mac' || 'verify-hosted' }}" in ci
-    assert "format('titanskies-release-{0}-{1}', github.run_id, github.run_attempt)" in ci
-    assert ci.count("format('titanskies-release-{0}-{1}', github.run_id, github.run_attempt)") == 1
-    assert "environment: ${{ inputs.runner == 'mac' && 'trusted-mac' || 'release-verification' }}" in ci
-    assert ci.count("runs-on:") == 4
     assert "self-hosted" not in ci
     assert "./scripts/bootstrap-ci-tools" in setup
     assert "actions/checkout@" not in setup
     assert ci.index("actions/checkout@") < ci.index("./.github/actions/setup")
-    assert ci.count("actions/checkout@") == 4
+    assert ci.count("runs-on:") == 1
+    assert ci.count("actions/checkout@") == 1
     assert ci.count("./scripts/verify-checks") == 1
-    assert ci.count("./scripts/verify-web") == 1
-    assert ci.count("./scripts/verify-containers") == 1
-    assert ci.count("./scripts/verify_release.sh") == 1
-    assert "if: inputs.runner != 'mac'" in ci
-    assert "needs: [checks, web, containers]" in ci
-    assert "always() && !cancelled()" in ci
+    assert "./scripts/verify-web" not in ci
+    assert "./scripts/verify-containers" not in ci
+    assert "./scripts/verify_release.sh" not in ci
+    assert "verify-hosted" not in ci
+    assert "verify-mac" not in ci
     assert "brew install" not in ci
-    assert "verify-hosted:" not in ci
-    assert "verify-mac:" not in ci
+
+
+def test_heavy_runs_web_and_containers_weekly_and_mac_only_when_dispatched() -> None:
+    heavy = _workflow("heavy.yml")
+    assert "permissions:\n  contents: read\n" in heavy
+    assert "pull_request:" not in heavy
+    assert "push:" not in heavy
+    assert "workflow_dispatch:" in heavy
+    assert 'cron: "0 6 * * 1"' in heavy
+    group = next(line.strip() for line in heavy.splitlines() if line.strip().startswith("group:"))
+    assert group.startswith("group: heavy-${{ github.workflow }}-${{ github.ref }}-")
+    assert group.endswith("inputs.runner || 'hosted' }}")
+    assert "workflow_dispatch" in group
+    assert "mac_label" not in heavy
+    assert "self-hosted" not in heavy
+    assert "format('titanskies-release-{0}-{1}', github.run_id, github.run_attempt)" in heavy
+    assert heavy.count("format('titanskies-release-{0}-{1}', github.run_id, github.run_attempt)") == 1
+    assert "environment: trusted-mac" in heavy
+    assert "release-verification" not in heavy
+    assert heavy.count("inputs.runner != 'mac'") == 2
+    assert "github.event_name == 'workflow_dispatch' && inputs.runner == 'mac'" in heavy
+    assert heavy.count("runs-on:") == 3
+    assert heavy.count("actions/checkout@") == 3
+    assert heavy.count("./scripts/verify-web") == 1
+    assert heavy.count("./scripts/verify-containers") == 1
+    assert heavy.count("./scripts/verify_release.sh") == 1
+    assert "./scripts/verify-checks" not in heavy
+    assert "always() && !cancelled()" not in heavy
+    assert "needs:" not in heavy
+    assert "\n  verify-mac:\n" in heavy
+    assert "brew install" not in heavy
 
 
 def test_release_has_minimal_permissions_and_delegates_to_one_script() -> None:
@@ -64,7 +89,8 @@ def test_release_has_minimal_permissions_and_delegates_to_one_script() -> None:
     assert "attestations: write" not in release
     assert "pull_request:" not in release
     assert "branches:" not in release
-    assert 'tags:\n      - "v*"' in release
+    assert "tags:" not in release
+    assert "push:" not in release
     assert "workflow_dispatch:" in release
     assert "mac_label" not in release
     assert "format('titanskies-release-{0}-{1}', github.run_id, github.run_attempt)" in release

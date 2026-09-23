@@ -48,7 +48,7 @@ Useful modes:
 - `npm run ingest:once` performs one live refresh.
 - `npm run dev:demo` uses bundled synthetic fixtures and makes no provider requests.
 
-Run `./scripts/verify-fast` during development and `./scripts/verify` before merging. The public-release and CI gate is `./scripts/verify_release.sh` (`npm run verify:release`), which runs `scripts/verify-checks`, `scripts/verify-demo`, `scripts/verify-ingest-artifacts`, `scripts/verify-frontend`, and `scripts/verify-container-smokes` in that order. Hosted CI runs the grouped stage scripts `verify-checks`, `verify-web` (demo + frontend), and `verify-containers` (ingest artifacts + container smokes) as parallel jobs and aggregates them as the `verify-hosted` check. Scientific and publication invariants are summarized in [`AGENTS.md`](AGENTS.md).
+Run `./scripts/verify-fast` during development and `./scripts/verify` before merging. The public-release gate is `./scripts/verify_release.sh` (`npm run verify:release`), which runs `scripts/verify-checks`, `scripts/verify-demo`, `scripts/verify-ingest-artifacts`, `scripts/verify-frontend`, and `scripts/verify-container-smokes` in that order. Pull requests and `main` run `verify-checks` only. Playwright (`verify-web`) and Docker (`verify-containers`) run weekly, or on a manual `heavy.yml` dispatch. A trusted Mac run of `verify_release.sh` is the manual `runner=mac` input on that same workflow. Publish with a manual `release.yml` dispatch. Scientific and publication invariants are summarized in [`AGENTS.md`](AGENTS.md).
 
 ## Read-only HTTP interfaces
 

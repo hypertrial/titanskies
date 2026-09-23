@@ -1,0 +1,71 @@
+name: Heavy
+
+on:
+  schedule:
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+    inputs:
+      runner:
+        description: Runner for a trusted manual verification run
+        required: true
+        default: hosted
+        type: choice
+        options:
+          - hosted
+          - mac
+
+permissions:
+  contents: read
+
+concurrency:
+  group: heavy-${{ github.workflow }}-${{ github.ref }}-${{ github.event_name == 'workflow_dispatch' && inputs.runner || 'hosted' }}
+  cancel-in-progress: true
+
+jobs:
+  web:
+    if: ${{ github.event_name != 'workflow_dispatch' || inputs.runner != 'mac' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: ./.github/actions/setup
+        with:
+          playwright: "true"
+      - run: ./scripts/verify-web
+
+  containers:
+    if: ${{ github.event_name != 'workflow_dispatch' || inputs.runner != 'mac' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: ./.github/actions/setup
+        with:
+          docker: "true"
+      - run: ./scripts/verify-containers
+
+  verify-mac:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.runner == 'mac' }}
+    runs-on: ${{ format('titanskies-release-{0}-{1}', github.run_id, github.run_attempt) }}
+    environment: trusted-mac
+    timeout-minutes: 90
+    steps:
+      - name: Mac checkout
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Mac setup
+        uses: ./.github/actions/setup
+        with:
+          playwright: "true"
+          docker: "true"
+          python: "false"
+      - name: Mac release gate
+        run: ./scripts/verify_release.sh

@@ -7,8 +7,8 @@ The canonical release implementation is [`scripts/release`](../scripts/release).
 1. Merge a release-ready PR with every required check green.
 2. Confirm `package.json` contains the intended `X.Y.Z` version and `docs/releases/vX.Y.Z.md` exists.
 3. Restrict approval on the `release` and `trusted-mac` environments to the repository owner (`mattfaltyn`) and allow owner self-review so releases never depend on another account. Configure `mattfaltyn` directly—not the shared administrator role—as the always-on bypass actor for the protected `main` ruleset. Protect `v*` tags with separate active rulesets: repository administrators may create them, while nobody may update or delete them unless `mattfaltyn` explicitly authorizes that specific destructive operation.
-4. Create and push an annotated `vX.Y.Z` tag at a commit contained in protected `main` history.
-5. The tag-triggered Release workflow first runs the full release gate with read-only permissions. Only after that succeeds does the protected publish job receive package, release, and OIDC permissions. It builds `linux/amd64` and `linux/arm64`, validates platform-bound SBOM and `mode=max` provenance, signs the digest keylessly, verifies its exact workflow identity, proves anonymous visibility, moves `latest`, and creates the GitHub Release last.
+4. Create and push an annotated `vX.Y.Z` tag at a commit contained in protected `main` history. Pushing the tag does not start runners.
+5. Manually dispatch `release.yml` on that exact tag, with `runner=hosted`. The workflow ref must be `refs/tags/vX.Y.Z`; a branch dispatch fails the release script. It first runs the full release gate with read-only permissions. Only after that succeeds does the protected publish job receive package, release, and OIDC permissions. It builds `linux/amd64` and `linux/arm64`, validates platform-bound SBOM and `mode=max` provenance, signs the digest keylessly, verifies its exact workflow identity, proves anonymous visibility, moves `latest`, and creates the GitHub Release last.
 
 The workflow publishes only `vX.Y.Z` and `latest`. The GitHub Release contains the CycloneDX SBOM, third-party notices, versioned release notes, and image digest record. GitHub supplies source archives.
 
@@ -41,10 +41,10 @@ Set `TITANSKIES_VERSION=vX.Y.Z` for immutable Compose updates. For digest pinnin
 Use this only for a trusted ref already present in `hypertrial/titanskies` when hosted capacity is unavailable. The runner is repository-scoped, ephemeral, one-job, and never installed as a service.
 
 1. Start the Mac's approved Linux Docker runtime (Docker Desktop or Colima), select its context, and confirm `docker info` and `docker buildx inspect --bootstrap` advertise both target platforms.
-2. Cancel the queued hosted workflow run.
-3. For a pull request, change the protected `main` ruleset's required check from `verify-hosted` to `verify-mac`. Both names run the same canonical gate, but separating them prevents a canceled hosted check from masking the Mac result. Restore `verify-hosted` after hosted capacity returns; never remove the required-check rule.
+2. If a hosted Release or Heavy run is already queued for this ref, cancel it. A tag push does not queue one by itself.
+3. Leave the protected `main` ruleset's required check as `checks`. Do not replace it with `verify-mac`. Mac verification is a manual dispatch, not the merge gate.
 4. In GitHub repository Settings → Actions → Runners, choose **New self-hosted runner**, select macOS ARM64, and use the current package URL and checksum commands shown by GitHub. Do not reuse an older download or checksum from this document.
-5. Manually dispatch `ci.yml` or `release.yml` at the trusted branch/tag with `runner=mac`. A release dispatch must select the exact annotated tag. Note the workflow run ID and attempt number, then have `mattfaltyn` approve the `trusted-mac` environment only after checking the queued workflow, ref, commit, and actor. The workflow derives its one-use runner label as `titanskies-release-RUN_ID-RUN_ATTEMPT`; callers cannot choose it.
+5. Manually dispatch `heavy.yml` or `release.yml` at the trusted branch/tag with `runner=mac`. A release dispatch must select the exact annotated tag. Note the workflow run ID and attempt number, then have `mattfaltyn` approve the `trusted-mac` environment only after checking the queued workflow, ref, commit, and actor. The workflow derives its one-use runner label as `titanskies-release-RUN_ID-RUN_ATTEMPT`; callers cannot choose it.
 6. Extract the runner into a new temporary directory and register it with the one-use token from GitHub and that exact derived label. Suppress every default self-hosted label so no other workflow can select the runner:
 
    ```sh
