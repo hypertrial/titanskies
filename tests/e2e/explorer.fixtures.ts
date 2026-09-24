@@ -65,11 +65,15 @@ export async function clickCityMarker(page: import("@playwright/test").Page, nam
   for (const point of points) {
     const x = (canvasBox?.x ?? 0) + point.x;
     const y = (canvasBox?.y ?? 0) + point.y;
+    if (Math.hypot(x - centerX, y - centerY) > 48) break;
     if (!await page.evaluate(({ x, y }) => document.querySelector('[data-testid="interactive-globe"]')?.contains(document.elementFromPoint(x, y)), { x, y })) continue;
     await page.mouse.click(x, y);
-    if (await page.getByTestId("details-card").isVisible()) return;
+    if (await page.getByTestId("details-card").isVisible()) {
+      await expect(page.getByRole("dialog").getByRole("heading")).toContainText(name);
+      return;
+    }
   }
-  await expect(page.getByTestId("details-card")).toBeVisible();
+  throw new Error(`No selectable ${name} monitor marker near its map label`);
 }
 
 export async function assertDesktopSecondarySpacing(page: import("@playwright/test").Page) {

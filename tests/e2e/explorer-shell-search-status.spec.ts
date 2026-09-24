@@ -346,10 +346,19 @@ test("compact deep zoom enforces place-label caps and collision spacing", async 
     const globe = page.getByTestId("interactive-globe");
     await globe.focus();
     for (let zoom = 0; zoom < 8; zoom += 1) await globe.press("+");
-    await expect.poll(async () => Number(await page.getByTestId("map-label-layer").getAttribute("data-label-accepted-count")), { timeout: 15_000 }).toBeGreaterThan(6);
+    const layer = page.getByTestId("map-label-layer");
+    await expect.poll(async () => Number(await layer.getAttribute("data-label-accepted-count")), { timeout: 15_000 }).toBeGreaterThan(6);
+    let previousRevision = -1;
+    let stable = 0;
+    await expect.poll(async () => {
+      const revision = Number(await layer.getAttribute("data-label-layout-revision"));
+      stable = revision === previousRevision ? stable + 1 : 0;
+      previousRevision = revision;
+      return stable >= 2;
+    }, { intervals: [250], timeout: 10_000 }).toBe(true);
     const places = page.locator('.map-label:not(.country)');
-    await expect.poll(() => places.count()).toBeLessThanOrEqual(cap);
-    await expect.poll(() => page.locator(".map-label").evaluateAll((labels) => {
+    expect(await places.count()).toBeLessThanOrEqual(cap);
+    const overlap = await page.locator(".map-label").evaluateAll((labels) => {
       const rectangles = labels.filter((label) => Number(getComputedStyle(label).opacity) > 0.05)
         .map((label) => {
           const rect = label.getBoundingClientRect();
@@ -364,7 +373,8 @@ test("compact deep zoom enforces place-label caps and collision spacing", async 
         }
       }
       return null;
-    }), { timeout: 5_000 }).toBeNull();
+    });
+    expect(overlap).toBeNull();
   }
 });
 
