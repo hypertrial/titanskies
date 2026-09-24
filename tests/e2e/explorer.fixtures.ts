@@ -33,20 +33,47 @@ export async function searchAndSelectMapLabel(page: import("@playwright/test").P
   } });
 }
 
+async function settledAirMarkerScreens(page: import("@playwright/test").Page) {
+  const layer = page.getByTestId("map-hover-layer");
+  let previous = "";
+  let stable = 0;
+  let points: Array<{ x: number; y: number }> = [];
+  await expect.poll(async () => {
+    const raw = await layer.getAttribute("data-cluster-screens") ?? "";
+    stable = raw && raw === previous ? stable + 1 : 0;
+    previous = raw;
+    points = raw ? JSON.parse(raw) : [];
+    return points.length > 0 && stable >= 2;
+  }, { intervals: [250], timeout: 10_000 }).toBe(true);
+  return points;
+}
+
 export async function clickCityMarker(page: import("@playwright/test").Page, name: string) {
   const matchingLabels = page.locator(".map-label.city").filter({ hasText: name });
   if (!await matchingLabels.count()) await searchCity(page, name);
   await expect.poll(() => matchingLabels.count()).toBeGreaterThan(0);
-  const label = matchingLabels.first();
-  const labelBox = await label.boundingBox();
   const canvas = page.getByTestId("interactive-globe");
   const canvasBox = await canvas.boundingBox();
-  expect(labelBox).toBeTruthy();
   expect(canvasBox).toBeTruthy();
-  await canvas.click({ position: {
-    x: (labelBox?.x ?? 0) + (labelBox?.width ?? 0) / 2 - (canvasBox?.x ?? 0),
-    y: (labelBox?.y ?? 0) + (labelBox?.height ?? 0) / 2 - (canvasBox?.y ?? 0),
-  } });
+  const labelBox = await matchingLabels.first().boundingBox();
+  expect(labelBox).toBeTruthy();
+  const points = await settledAirMarkerScreens(page);
+  const centerX = (labelBox?.x ?? 0) + (labelBox?.width ?? 0) / 2;
+  const centerY = (labelBox?.y ?? 0) + (labelBox?.height ?? 0) / 2;
+  points.sort((a, b) => Math.hypot((canvasBox?.x ?? 0) + a.x - centerX, (canvasBox?.y ?? 0) + a.y - centerY)
+    - Math.hypot((canvasBox?.x ?? 0) + b.x - centerX, (canvasBox?.y ?? 0) + b.y - centerY));
+  for (const point of points) {
+    const x = (canvasBox?.x ?? 0) + point.x;
+    const y = (canvasBox?.y ?? 0) + point.y;
+    if (Math.hypot(x - centerX, y - centerY) > 48) break;
+    if (!await page.evaluate(({ x, y }) => document.querySelector('[data-testid="interactive-globe"]')?.contains(document.elementFromPoint(x, y)), { x, y })) continue;
+    await page.mouse.click(x, y);
+    if (await page.getByTestId("details-card").isVisible()) {
+      await expect(page.getByRole("dialog").getByRole("heading")).toContainText(name);
+      return;
+    }
+  }
+  throw new Error(`No selectable ${name} monitor marker near its map label`);
 }
 
 export async function assertDesktopSecondarySpacing(page: import("@playwright/test").Page) {
@@ -97,21 +124,23 @@ export async function hoverNearbyAirMarker(page: import("@playwright/test").Page
   const matchingLabels = page.locator(".map-label.city").filter({ hasText: city });
   if (!await matchingLabels.count()) await searchCity(page, city);
   await expect.poll(() => matchingLabels.count()).toBeGreaterThan(0);
-  const layer = page.getByTestId("map-hover-layer");
   const hover = page.getByTestId("map-hover-label");
   const canvas = page.getByTestId("interactive-globe");
   const canvasBox = await canvas.boundingBox();
   expect(canvasBox).toBeTruthy();
-  let screens: Array<{ x: number; y: number }> = [];
-  await expect.poll(async () => {
-    const raw = await layer.getAttribute("data-cluster-screens");
-    const points = raw ? JSON.parse(raw) as Array<{ x: number; y: number }> : [];
-    screens = points.filter((point) => point.x > 24 && point.y > 24 && point.x < (canvasBox?.width ?? 0) - 24 && point.y < (canvasBox?.height ?? 0) - 24);
-    return screens.length;
-  }).toBeGreaterThan(0);
+  const screens = (await settledAirMarkerScreens(page)).filter((point) => point.x > 24 && point.y > 24 && point.x < (canvasBox?.width ?? 0) - 24 && point.y < (canvasBox?.height ?? 0) - 24);
+  expect(screens.length).toBeGreaterThan(0);
   for (const point of screens) {
-    await canvas.hover({ position: { x: point.x, y: point.y } });
-    if (await hover.count()) return hover;
+    const x = (canvasBox?.x ?? 0) + point.x;
+    const y = (canvasBox?.y ?? 0) + point.y;
+    if (!await page.evaluate(({ x, y }) => document.querySelector('[data-testid="interactive-globe"]')?.contains(document.elementFromPoint(x, y)), { x, y })) continue;
+    await page.mouse.move(x, y);
+    try {
+      await expect(hover).toBeVisible({ timeout: 800 });
+      await expect(hover).toHaveAttribute("data-ready", "true", { timeout: 800 });
+      await page.waitForTimeout(150);
+      if (await hover.isVisible()) return hover;
+    } catch { /* try the next visible marker */ }
   }
   await expect(hover).toBeVisible();
   return hover;

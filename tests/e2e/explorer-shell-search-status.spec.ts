@@ -346,22 +346,35 @@ test("compact deep zoom enforces place-label caps and collision spacing", async 
     const globe = page.getByTestId("interactive-globe");
     await globe.focus();
     for (let zoom = 0; zoom < 8; zoom += 1) await globe.press("+");
-    await expect.poll(async () => Number(await page.getByTestId("map-label-layer").getAttribute("data-label-accepted-count")), { timeout: 15_000 }).toBeGreaterThan(6);
-    await page.waitForTimeout(220);
+    const layer = page.getByTestId("map-label-layer");
+    await expect.poll(async () => Number(await layer.getAttribute("data-label-accepted-count")), { timeout: 15_000 }).toBeGreaterThan(6);
+    let previousRevision = -1;
+    let stable = 0;
+    await expect.poll(async () => {
+      const revision = Number(await layer.getAttribute("data-label-layout-revision"));
+      stable = revision === previousRevision ? stable + 1 : 0;
+      previousRevision = revision;
+      return stable >= 2;
+    }, { intervals: [250], timeout: 10_000 }).toBe(true);
     const places = page.locator('.map-label:not(.country)');
     expect(await places.count()).toBeLessThanOrEqual(cap);
-    const rectangles = await page.locator(".map-label").evaluateAll((labels) => labels
-      .filter((label) => Number(getComputedStyle(label).opacity) > 0.05)
-      .map((label) => {
-        const rect = label.getBoundingClientRect();
-        return { left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom };
-      }));
-    for (let left = 0; left < rectangles.length; left += 1) {
-      for (let right = left + 1; right < rectangles.length; right += 1) {
-        expect(rectangles[left].right <= rectangles[right].left || rectangles[right].right <= rectangles[left].left
-          || rectangles[left].bottom <= rectangles[right].top || rectangles[right].bottom <= rectangles[left].top).toBe(true);
+    const overlap = await page.locator(".map-label").evaluateAll((labels) => {
+      const rectangles = labels.filter((label) => Number(getComputedStyle(label).opacity) > 0.05)
+        .map((label) => {
+          const rect = label.getBoundingClientRect();
+          return { label: label.textContent, left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom };
+        });
+      for (let left = 0; left < rectangles.length; left += 1) {
+        for (let right = left + 1; right < rectangles.length; right += 1) {
+          if (rectangles[left].right > rectangles[right].left && rectangles[right].right > rectangles[left].left
+            && rectangles[left].bottom > rectangles[right].top && rectangles[right].bottom > rectangles[left].top) {
+            return JSON.stringify({ viewport, a: rectangles[left], b: rectangles[right] });
+          }
+        }
       }
-    }
+      return null;
+    });
+    expect(overlap).toBeNull();
   }
 });
 
