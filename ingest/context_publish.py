@@ -166,7 +166,8 @@ def asset_path_from_url(url: str) -> str | None:
 
 def seed_asset_memo(store: FrameStore, previous: dict[str, Any] | None, *, workers: int | None = None) -> bool:
     memo = current_asset_memo()
-    pairs: list[tuple[str, str]] = []
+    paths: list[str] = []
+    seen: set[str] = set()
 
     def collect(value: Any) -> None:
         if isinstance(value, dict):
@@ -177,32 +178,32 @@ def seed_asset_memo(store: FrameStore, previous: dict[str, Any] | None, *, worke
                 collect(nested)
         elif isinstance(value, str):
             path = asset_path_from_url(value)
-            if path:
-                pairs.append((path, value))
+            if path and path not in seen:
+                seen.add(path)
+                paths.append(path)
 
     collect(previous)
     verify = os.environ.get("CONTEXT_VERIFY_ASSETS") == "1"
     # Content-addressed blob keys embed the digest; HEAD 200 is sufficient trust unless CONTEXT_VERIFY_ASSETS=1.
     if _blob_store(store) and not verify:
 
-        def present(item: tuple[str, str]) -> bool:
-            path, _url = item
+        def present(path: str) -> bool:
             try:
                 return store.exists(path)
             except (OSError, RuntimeError, ValueError):
                 return False
 
         concurrency = max(1, workers or GLOBAL_HTTP_LIMIT)
-        results = map_bounded(pairs, present, workers=concurrency)
+        results = map_bounded(paths, present, workers=concurrency)
         if not all(results):
             memo.clear()
             return False
-        for path, _url in pairs:
+        for path in paths:
             memo[path] = store.url_for(path)
         return True
 
     valid = True
-    for path, _url in pairs:
+    for path in paths:
         try:
             data = store.get_bytes(path, max_bytes=max(CONTEXT_RASTER_BUDGET_BYTES, MONITOR_JSON_BUDGET_BYTES))
         except (OSError, RuntimeError, ValueError):

@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import re
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -672,6 +673,7 @@ def test_blob_seed_uses_head_without_gets(monkeypatch: Any) -> None:
         with patch("ingest.blob_store._blob_session", return_value=memory):
             store.put_bytes(path, data, "application/octet-stream", cache_seconds=60, overwrite=False)
         previous["assets"].append(store.url_for(path))
+        previous["assets"].append(store.url_for(path))
     puts = memory.puts
     with patch("ingest.blob_store._blob_session", return_value=memory), ingest_run() as (metrics, _budget):
         assert seed_asset_memo(store, previous, workers=3) is True
@@ -698,11 +700,13 @@ def test_blob_seed_rebinds_memo_urls_to_store_origin() -> None:
         with patch("ingest.blob_store._blob_session", return_value=memory):
             store.put_bytes(path, data, "application/octet-stream", cache_seconds=60, overwrite=False)
         previous["assets"].append(f"https://evil.example/{path}")
+        previous["assets"].append(f"https://another.example/{path}?cache=old")
     with patch("ingest.blob_store._blob_session", return_value=memory), ingest_run():
         assert seed_asset_memo(store, previous, workers=2) is True
         memo = current_asset_memo()
         for path in paths:
             assert memo[path] == store.url_for(path)
+    assert memory.heads == 2
 
 
 def test_blob_seed_verify_assets_uses_gets(monkeypatch: Any) -> None:
@@ -720,6 +724,7 @@ def test_blob_seed_verify_assets_uses_gets(monkeypatch: Any) -> None:
         with patch("ingest.blob_store._blob_session", return_value=memory):
             store.put_bytes(path, data, "application/octet-stream", cache_seconds=60, overwrite=False)
         previous["assets"].append(store.url_for(path))
+        previous["assets"].append(f"https://old.example/{path}")
     puts = memory.puts
     with patch("ingest.blob_store._blob_session", return_value=memory), ingest_run() as (metrics, _budget):
         assert seed_asset_memo(store, previous, workers=3) is True
@@ -728,6 +733,55 @@ def test_blob_seed_verify_assets_uses_gets(monkeypatch: Any) -> None:
     assert memory.puts == puts
     assert metrics.storage_reads == 3
     assert metrics.storage_read_bytes > 0
+
+
+def test_blob_seed_missing_distinct_asset_clears_memo() -> None:
+    from ingest.context_publish import seed_asset_memo
+    from ingest.perf import current_asset_memo, ingest_run
+
+    memory = _MemoryBlobSession()
+    store = BlobFrameStore(_settings())
+    data = b"present"
+    present = f"context/assets/{hashlib.sha256(data).hexdigest()[:20]}/present.bin"
+    missing = "context/assets/aaaaaaaaaaaaaaaaaaaa/missing.bin"
+    memory.objects[present] = data
+    previous = {"assets": [store.url_for(present), store.url_for(missing), store.url_for(missing)]}
+    with patch("ingest.blob_store._blob_session", return_value=memory), ingest_run():
+        assert seed_asset_memo(store, previous, workers=1) is False
+        assert current_asset_memo() == {}
+    assert memory.heads == 2
+
+
+def test_blob_seed_digest_failure_clears_memo(monkeypatch: Any) -> None:
+    from ingest.context_publish import seed_asset_memo
+    from ingest.perf import current_asset_memo, ingest_run
+
+    monkeypatch.setenv("CONTEXT_VERIFY_ASSETS", "1")
+    memory = _MemoryBlobSession()
+    store = BlobFrameStore(_settings())
+    data = b"expected"
+    path = f"context/assets/{hashlib.sha256(data).hexdigest()[:20]}/item.bin"
+    memory.objects[path] = b"corrupt"
+    previous = {"assets": [store.url_for(path), f"https://old.example/{path}"]}
+    with patch("ingest.blob_store._blob_session", return_value=memory), ingest_run():
+        assert seed_asset_memo(store, previous) is False
+        assert current_asset_memo() == {}
+    assert memory.gets == 1
+
+
+def test_bundled_manifest_seed_checks_each_distinct_asset_once() -> None:
+    from ingest.context_publish import seed_asset_memo
+    from ingest.perf import ingest_run
+
+    pointer = json.loads(Path("public/demo/context/latest.json").read_text(encoding="utf-8"))
+    manifest = json.loads((Path("public/demo") / pointer["manifestPath"]).read_text(encoding="utf-8"))
+    references = re.findall(r"context/assets/[0-9a-f]{20}/[A-Za-z0-9._-]+", json.dumps(manifest))
+    assert len(references) > len(set(references))
+    assert len(set(references)) == 738
+    store = BlobFrameStore(_settings())
+    with patch.object(store, "exists", return_value=True) as exists, ingest_run():
+        assert seed_asset_memo(store, manifest, workers=4) is True
+    assert exists.call_count == len(set(references))
 
 
 def test_local_exists_requires_regular_file(tmp_path: Path) -> None:
@@ -759,8 +813,29 @@ def test_local_seed_still_full_reads(tmp_path: Path) -> None:
         path = f"context/assets/{digest}/item-{index}.bin"
         store.put_bytes(path, data, "application/octet-stream", cache_seconds=60, overwrite=False)
         previous["assets"].append(store.url_for(path))
+        previous["assets"].append(f"https://old.example/{path}")
         total += len(data)
     with ingest_run() as (metrics, _budget):
         assert seed_asset_memo(store, previous) is True
     assert metrics.storage_reads == 3
     assert metrics.storage_read_bytes == total
+
+
+@pytest.mark.parametrize("missing", [True, False])
+def test_local_seed_missing_or_corrupt_asset_clears_memo(tmp_path: Path, missing: bool) -> None:
+    from ingest.context_publish import seed_asset_memo
+    from ingest.perf import current_asset_memo, ingest_run
+
+    store = LocalFrameStore(tmp_path)
+    good = b"good"
+    good_path = f"context/assets/{hashlib.sha256(good).hexdigest()[:20]}/good.bin"
+    store.put_bytes(good_path, good, "application/octet-stream", cache_seconds=60, overwrite=False)
+    expected = b"expected"
+    bad_path = f"context/assets/{hashlib.sha256(expected).hexdigest()[:20]}/bad.bin"
+    if not missing:
+        store.put_bytes(bad_path, b"corrupt", "application/octet-stream", cache_seconds=60, overwrite=False)
+    previous = {"assets": [store.url_for(good_path), store.url_for(bad_path), store.url_for(bad_path)]}
+    with ingest_run() as (metrics, _budget):
+        assert seed_asset_memo(store, previous) is False
+        assert current_asset_memo() == {}
+    assert metrics.storage_reads == 2
