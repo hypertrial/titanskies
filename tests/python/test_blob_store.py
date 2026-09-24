@@ -806,17 +806,20 @@ def test_local_seed_still_full_reads(tmp_path: Path) -> None:
 
     store = LocalFrameStore(tmp_path)
     previous: dict[str, Any] = {"assets": []}
+    paths: list[str] = []
     total = 0
     for index in range(3):
         data = f"asset-{index}".encode()
         digest = hashlib.sha256(data).hexdigest()[:20]
         path = f"context/assets/{digest}/item-{index}.bin"
+        paths.append(path)
         store.put_bytes(path, data, "application/octet-stream", cache_seconds=60, overwrite=False)
         previous["assets"].append(store.url_for(path))
         previous["assets"].append(f"https://old.example/{path}")
         total += len(data)
-    with ingest_run() as (metrics, _budget):
+    with patch.object(store, "get_bytes", wraps=store.get_bytes) as get_bytes, ingest_run() as (metrics, _budget):
         assert seed_asset_memo(store, previous) is True
+    assert [call.args[0] for call in get_bytes.call_args_list] == paths
     assert metrics.storage_reads == 3
     assert metrics.storage_read_bytes == total
 
