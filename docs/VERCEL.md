@@ -12,6 +12,7 @@ Production requires these server-side variables:
 - `BLOB_STORE_ID`
 - `PUBLIC_BLOB_BASE_URL`
 - `CRON_SECRET`
+- `CONTEXT_WATCH_SECONDS=3600` so `/api/context-health` stays fresh across the hourly cron
 - optional provider credentials such as `AIRNOW_API_KEY`
 
 `PUBLIC_BLOB_BASE_URL` must be the HTTPS origin of the selected Vercel Blob store. Blob mode refuses to start when any required storage setting is missing or malformed. `BLOB_READ_WRITE_TOKEN`, `CRON_SECRET`, and provider credentials must never use a `NEXT_PUBLIC_` name.

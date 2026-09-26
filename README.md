@@ -27,7 +27,7 @@ For a network-free demonstration, set `CONTEXT_SOURCE=demo`. Demo files are synt
 
 ## Public Vercel deployment
 
-Vercel production uses the same code and v8 publication contract with `STORAGE_BACKEND=blob`. A bearer-authenticated Python Cron function runs ingestion every 15 minutes with a 300-second application budget and 360-second function limit. Publications, leases, and reusable forecast caches live in Vercel Blob.
+Vercel production uses the same code and v8 publication contract with `STORAGE_BACKEND=blob`. A bearer-authenticated Python Cron function runs ingestion hourly with a 300-second application budget and 360-second function limit. Production sets `CONTEXT_WATCH_SECONDS=3600` so the health window stays twice that interval. Publications, leases, and reusable forecast caches live in Vercel Blob.
 
 Production is promoted only by updating the exact public-core submodule pin in the private deployment repository. Preview deployments use bundled demo data and receive no Blob token, provider key, or Cron secret. See [`docs/VERCEL.md`](docs/VERCEL.md).
 
